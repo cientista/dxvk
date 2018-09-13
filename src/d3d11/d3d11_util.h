@@ -8,6 +8,19 @@
 
 namespace dxvk {
   
+  template<typename T>
+  UINT CompactSparseList(T* pData, UINT Mask) {
+    uint32_t count = 0;
+    
+    while (Mask != 0) {
+      uint32_t id = bit::tzcnt(Mask);
+      pData[count++] = pData[id];
+      Mask &= Mask - 1;
+    }
+
+    return count;
+  }
+
   HRESULT DecodeSampleCount(
           UINT                      Count,
           VkSampleCountFlagBits*    pCount);
@@ -24,4 +37,19 @@ namespace dxvk {
   VkMemoryPropertyFlags GetMemoryFlagsForUsage(
           D3D11_USAGE               Usage);
   
+  VkShaderStageFlagBits GetShaderStage(
+          DxbcProgramType           ProgramType);
+  
+  VkBufferUsageFlags GetBufferUsageFlags(
+          UINT                      BindFlags);
+  
+  VkImageUsageFlags GetImageUsageFlags(
+          UINT                      BindFlags);
+  
+  VkFormatFeatureFlags GetBufferFormatFeatures(
+          UINT                      BindFlags);
+
+  VkFormatFeatureFlags GetImageFormatFeatures(
+          UINT                      BindFlags);
+
 }

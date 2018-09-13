@@ -6,9 +6,7 @@
 
 namespace dxvk::hud {
   
-  HudRenderer::HudRenderer(
-    const Rc<DxvkDevice>&   device,
-    const Rc<DxvkContext>&  context)
+  HudRenderer::HudRenderer(const Rc<DxvkDevice>& device)
   : m_mode          (Mode::RenderNone),
     m_vertShader    (createVertexShader(device)),
     m_textShader    (createTextShader(device)),
@@ -17,7 +15,7 @@ namespace dxvk::hud {
     m_fontView      (createFontView(device)),
     m_fontSampler   (createFontSampler(device)),
     m_vertexBuffer  (createVertexBuffer(device)) {
-    this->initFontTexture(device, context);
+    this->initFontTexture(device);
     this->initCharMap();
   }
   
@@ -192,7 +190,7 @@ namespace dxvk::hud {
       { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_IMAGE_VIEW_TYPE_MAX_ENUM },
     }};
     
-    return new DxvkShader(
+    return device->createShader(
       VK_SHADER_STAGE_VERTEX_BIT,
       resourceSlots.size(),
       resourceSlots.data(),
@@ -210,7 +208,7 @@ namespace dxvk::hud {
       { 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_IMAGE_VIEW_TYPE_2D       },
     }};
     
-    return new DxvkShader(
+    return device->createShader(
       VK_SHADER_STAGE_FRAGMENT_BIT,
       resourceSlots.size(),
       resourceSlots.data(),
@@ -222,7 +220,7 @@ namespace dxvk::hud {
   Rc<DxvkShader> HudRenderer::createLineShader(const Rc<DxvkDevice>& device) {
     const SpirvCodeBuffer codeBuffer(hud_line);
     
-    return new DxvkShader(
+    return device->createShader(
       VK_SHADER_STAGE_FRAGMENT_BIT,
       0, nullptr, { 0x2, 0x1 },
       codeBuffer);
@@ -255,6 +253,7 @@ namespace dxvk::hud {
     DxvkImageViewCreateInfo info;
     info.type           = VK_IMAGE_VIEW_TYPE_2D;
     info.format         = m_fontImage->info().format;
+    info.usage          = VK_IMAGE_USAGE_SAMPLED_BIT;
     info.aspect         = VK_IMAGE_ASPECT_COLOR_BIT;
     info.minLevel       = 0;
     info.numLevels      = 1;
@@ -301,8 +300,9 @@ namespace dxvk::hud {
   
   
   void HudRenderer::initFontTexture(
-    const Rc<DxvkDevice>&  device,
-    const Rc<DxvkContext>& context) {
+    const Rc<DxvkDevice>&  device) {
+    Rc<DxvkContext> context = device->createContext();
+    
     context->beginRecording(
       device->createCommandList());
     

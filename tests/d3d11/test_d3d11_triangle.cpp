@@ -6,6 +6,7 @@
 
 #include <thread>
 
+#include "../../src/util/thread.h"
 #include "../test_utils.h"
 
 using namespace dxvk;
@@ -334,24 +335,6 @@ public:
         break;
       }
     }
-    
-    // Swap chain stuff
-    uint32_t frameId = m_frameId++;
-    
-    if (frameId == 300) {
-      m_report = true;
-      std::cout << "fullscreen begin" << std::endl;
-      m_swapChain->SetFullscreenState(TRUE, nullptr);
-      std::cout << "fullscreen end" << std::endl;
-      m_report = false;
-    } else if (frameId == 600) {
-      m_report = true;
-      std::cout << "restore begin" << std::endl;
-      m_swapChain->SetFullscreenState(FALSE, nullptr);
-      std::cout << "restore end" << std::endl;
-      m_report = false;
-    }
-    
   }
   
   

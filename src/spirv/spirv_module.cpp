@@ -92,6 +92,16 @@ namespace dxvk {
   }
   
   
+  void SpirvModule::setInvocations(
+          uint32_t                entryPointId,
+          uint32_t                invocations) {
+    m_execModeInfo.putIns  (spv::OpExecutionMode, 4);
+    m_execModeInfo.putWord (entryPointId);
+    m_execModeInfo.putWord (spv::ExecutionModeInvocations);
+    m_execModeInfo.putInt32(invocations);
+  }
+  
+  
   void SpirvModule::setLocalSize(
           uint32_t                entryPointId,
           uint32_t                x,
@@ -329,6 +339,19 @@ namespace dxvk {
     return resultId;
   }
     
+  
+  uint32_t SpirvModule::specConst32(
+          uint32_t                typeId,
+          uint32_t                value) {
+    uint32_t resultId = this->allocateId();
+    
+    m_typeConstDefs.putIns  (spv::OpSpecConstant, 4);
+    m_typeConstDefs.putWord (typeId);
+    m_typeConstDefs.putWord (resultId);
+    m_typeConstDefs.putWord (value);
+    return resultId;
+  }
+  
   
   void SpirvModule::decorate(
           uint32_t                object,
@@ -597,11 +620,11 @@ namespace dxvk {
           spv::ImageFormat        format) {
     std::array<uint32_t, 7> args = {{
       sampledType,
-	  static_cast<uint32_t>(dimensionality),
+    static_cast<uint32_t>(dimensionality),
       depth, arrayed,
       multisample,
       sampled,
-	  static_cast<uint32_t>(format)
+    static_cast<uint32_t>(format)
     }};
     
     return this->defType(spv::OpTypeImage,
@@ -1423,6 +1446,21 @@ namespace dxvk {
   }
   
   
+  uint32_t SpirvModule::opVectorExtractDynamic(
+          uint32_t                resultType,
+          uint32_t                vector,
+          uint32_t                index) {
+    uint32_t resultId = this->allocateId();
+    
+    m_code.putIns (spv::OpVectorExtractDynamic, 5);
+    m_code.putWord(resultType);
+    m_code.putWord(resultId);
+    m_code.putWord(vector);
+    m_code.putWord(index);
+    return resultId;
+  }
+
+
   uint32_t SpirvModule::opVectorShuffle(
           uint32_t                resultType,
           uint32_t                vectorLeft,
@@ -2360,6 +2398,19 @@ namespace dxvk {
     m_code.putWord(resultId);
     m_code.putWord(m_instExtGlsl450);
     m_code.putWord(spv::GLSLstd450Trunc);
+    m_code.putWord(operand);
+    return resultId;
+  }
+  
+  
+  uint32_t SpirvModule::opFConvert(
+          uint32_t                resultType,
+          uint32_t                operand) {
+    uint32_t resultId = this->allocateId();
+
+    m_code.putIns (spv::OpFConvert, 4);
+    m_code.putWord(resultType);
+    m_code.putWord(resultId);
     m_code.putWord(operand);
     return resultId;
   }

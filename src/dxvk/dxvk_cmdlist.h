@@ -17,6 +17,19 @@
 namespace dxvk {
   
   /**
+   * \brief Command buffer flags
+   * 
+   * A set of flags used to specify which of
+   * the command buffers need to be submitted.
+   */
+  enum class DxvkCmdBufferFlag : uint32_t {
+    InitBuffer = 0,
+    ExecBuffer = 1,
+  };
+  
+  using DxvkCmdBufferFlags = Flags<DxvkCmdBufferFlag>;
+  
+  /**
    * \brief DXVK command list
    * 
    * Stores a command buffer that a context can use to record Vulkan
@@ -30,7 +43,6 @@ namespace dxvk {
   public:
     
     DxvkCommandList(
-      const Rc<vk::DeviceFn>& vkd,
             DxvkDevice*       device,
             uint32_t          queueFamily);
     ~DxvkCommandList();
@@ -204,7 +216,7 @@ namespace dxvk {
             VkQueryPool             queryPool,
             uint32_t                query,
             VkQueryControlFlags     flags) {
-      m_vkd->vkCmdBeginQuery(m_buffer,
+      m_vkd->vkCmdBeginQuery(m_execBuffer,
         queryPool, query, flags);
     }
     
@@ -212,18 +224,20 @@ namespace dxvk {
     void cmdBeginRenderPass(
       const VkRenderPassBeginInfo*  pRenderPassBegin,
             VkSubpassContents       contents) {
-      m_vkd->vkCmdBeginRenderPass(m_buffer,
+      m_vkd->vkCmdBeginRenderPass(m_execBuffer,
         pRenderPassBegin, contents);
     }
     
     
     void cmdBindDescriptorSet(
-          VkPipelineBindPoint       pipeline,
-          VkPipelineLayout          pipelineLayout,
-          VkDescriptorSet           descriptorSet) {
-      m_vkd->vkCmdBindDescriptorSets(m_buffer,
+            VkPipelineBindPoint       pipeline,
+            VkPipelineLayout          pipelineLayout,
+            VkDescriptorSet           descriptorSet,
+            uint32_t                  dynamicOffsetCount,
+      const uint32_t*                 pDynamicOffsets) {
+      m_vkd->vkCmdBindDescriptorSets(m_execBuffer,
         pipeline, pipelineLayout, 0, 1,
-        &descriptorSet, 0, nullptr);
+        &descriptorSet, dynamicOffsetCount, pDynamicOffsets);
     }
     
     
@@ -231,7 +245,7 @@ namespace dxvk {
             VkBuffer                buffer,
             VkDeviceSize            offset,
             VkIndexType             indexType) {
-      m_vkd->vkCmdBindIndexBuffer(m_buffer,
+      m_vkd->vkCmdBindIndexBuffer(m_execBuffer,
         buffer, offset, indexType);
     }
     
@@ -239,7 +253,7 @@ namespace dxvk {
     void cmdBindPipeline(
             VkPipelineBindPoint     pipelineBindPoint,
             VkPipeline              pipeline) {
-      m_vkd->vkCmdBindPipeline(m_buffer,
+      m_vkd->vkCmdBindPipeline(m_execBuffer,
         pipelineBindPoint, pipeline);
     }
     
@@ -249,7 +263,7 @@ namespace dxvk {
             uint32_t                bindingCount,
       const VkBuffer*               pBuffers,
       const VkDeviceSize*           pOffsets) {
-      m_vkd->vkCmdBindVertexBuffers(m_buffer,
+      m_vkd->vkCmdBindVertexBuffers(m_execBuffer,
         firstBinding, bindingCount, pBuffers, pOffsets);
     }
     
@@ -262,7 +276,7 @@ namespace dxvk {
             uint32_t                regionCount,
       const VkImageBlit*            pRegions,
             VkFilter                filter) {
-      m_vkd->vkCmdBlitImage(m_buffer,
+      m_vkd->vkCmdBlitImage(m_execBuffer,
         srcImage, srcImageLayout,
         dstImage, dstImageLayout,
         regionCount, pRegions, filter);
@@ -274,7 +288,7 @@ namespace dxvk {
       const VkClearAttachment*      pAttachments,
             uint32_t                rectCount,
       const VkClearRect*            pRects) {
-      m_vkd->vkCmdClearAttachments(m_buffer,
+      m_vkd->vkCmdClearAttachments(m_execBuffer,
         attachmentCount, pAttachments,
         rectCount, pRects);
     }
@@ -286,7 +300,7 @@ namespace dxvk {
       const VkClearColorValue*      pColor,
             uint32_t                rangeCount,
       const VkImageSubresourceRange* pRanges) {
-      m_vkd->vkCmdClearColorImage(m_buffer,
+      m_vkd->vkCmdClearColorImage(m_execBuffer,
         image, imageLayout, pColor,
         rangeCount, pRanges);
     }
@@ -298,7 +312,7 @@ namespace dxvk {
       const VkClearDepthStencilValue* pDepthStencil,
             uint32_t                rangeCount,
       const VkImageSubresourceRange* pRanges) {
-      m_vkd->vkCmdClearDepthStencilImage(m_buffer,
+      m_vkd->vkCmdClearDepthStencilImage(m_execBuffer,
         image, imageLayout, pDepthStencil,
         rangeCount, pRanges);
     }
@@ -309,7 +323,7 @@ namespace dxvk {
             VkBuffer                dstBuffer,
             uint32_t                regionCount,
       const VkBufferCopy*           pRegions) {
-      m_vkd->vkCmdCopyBuffer(m_buffer,
+      m_vkd->vkCmdCopyBuffer(m_execBuffer,
         srcBuffer, dstBuffer,
         regionCount, pRegions);
     }
@@ -321,7 +335,7 @@ namespace dxvk {
             VkImageLayout           dstImageLayout,
             uint32_t                regionCount,
       const VkBufferImageCopy*      pRegions) {
-      m_vkd->vkCmdCopyBufferToImage(m_buffer,
+      m_vkd->vkCmdCopyBufferToImage(m_execBuffer,
         srcBuffer, dstImage, dstImageLayout,
         regionCount, pRegions);
     }
@@ -334,7 +348,7 @@ namespace dxvk {
             VkImageLayout           dstImageLayout,
             uint32_t                regionCount,
       const VkImageCopy*            pRegions) {
-      m_vkd->vkCmdCopyImage(m_buffer,
+      m_vkd->vkCmdCopyImage(m_execBuffer,
         srcImage, srcImageLayout,
         dstImage, dstImageLayout,
         regionCount, pRegions);
@@ -347,7 +361,7 @@ namespace dxvk {
             VkBuffer                dstBuffer,
             uint32_t                regionCount,
       const VkBufferImageCopy*      pRegions) {
-      m_vkd->vkCmdCopyImageToBuffer(m_buffer,
+      m_vkd->vkCmdCopyImageToBuffer(m_execBuffer,
         srcImage, srcImageLayout, dstBuffer,
         regionCount, pRegions);
     }
@@ -357,7 +371,7 @@ namespace dxvk {
             uint32_t                x,
             uint32_t                y,
             uint32_t                z) {
-      m_vkd->vkCmdDispatch(m_buffer, x, y, z);
+      m_vkd->vkCmdDispatch(m_execBuffer, x, y, z);
     }
     
     
@@ -365,7 +379,7 @@ namespace dxvk {
             VkBuffer                buffer,
             VkDeviceSize            offset) {
       m_vkd->vkCmdDispatchIndirect(
-        m_buffer, buffer, offset);
+        m_execBuffer, buffer, offset);
     }
     
     
@@ -374,7 +388,7 @@ namespace dxvk {
             uint32_t                instanceCount,
             uint32_t                firstVertex,
             uint32_t                firstInstance) {
-      m_vkd->vkCmdDraw(m_buffer,
+      m_vkd->vkCmdDraw(m_execBuffer,
         vertexCount, instanceCount,
         firstVertex, firstInstance);
     }
@@ -385,7 +399,7 @@ namespace dxvk {
             VkDeviceSize            offset,
             uint32_t                drawCount,
             uint32_t                stride) {
-      m_vkd->vkCmdDrawIndirect(m_buffer,
+      m_vkd->vkCmdDrawIndirect(m_execBuffer,
         buffer, offset, drawCount, stride);
     }
     
@@ -396,7 +410,7 @@ namespace dxvk {
             uint32_t                firstIndex,
             uint32_t                vertexOffset,
             uint32_t                firstInstance) {
-      m_vkd->vkCmdDrawIndexed(m_buffer,
+      m_vkd->vkCmdDrawIndexed(m_execBuffer,
         indexCount, instanceCount,
         firstIndex, vertexOffset,
         firstInstance);
@@ -408,7 +422,7 @@ namespace dxvk {
             VkDeviceSize            offset,
             uint32_t                drawCount,
             uint32_t                stride) {
-      m_vkd->vkCmdDrawIndexedIndirect(m_buffer,
+      m_vkd->vkCmdDrawIndexedIndirect(m_execBuffer,
         buffer, offset, drawCount, stride);
     }
     
@@ -416,12 +430,12 @@ namespace dxvk {
     void cmdEndQuery(
             VkQueryPool             queryPool,
             uint32_t                query) {
-      m_vkd->vkCmdEndQuery(m_buffer, queryPool, query);
+      m_vkd->vkCmdEndQuery(m_execBuffer, queryPool, query);
     }
     
     
     void cmdEndRenderPass() {
-      m_vkd->vkCmdEndRenderPass(m_buffer);
+      m_vkd->vkCmdEndRenderPass(m_execBuffer);
     }
     
     
@@ -430,7 +444,7 @@ namespace dxvk {
             VkDeviceSize            dstOffset,
             VkDeviceSize            size,
             uint32_t                data) {
-      m_vkd->vkCmdFillBuffer(m_buffer,
+      m_vkd->vkCmdFillBuffer(m_execBuffer,
         dstBuffer, dstOffset, size, data);
     }
     
@@ -445,7 +459,7 @@ namespace dxvk {
       const VkBufferMemoryBarrier*  pBufferMemoryBarriers,
             uint32_t                imageMemoryBarrierCount,
       const VkImageMemoryBarrier*   pImageMemoryBarriers) {
-      m_vkd->vkCmdPipelineBarrier(m_buffer,
+      m_vkd->vkCmdPipelineBarrier(m_execBuffer,
         srcStageMask, dstStageMask, dependencyFlags,
         memoryBarrierCount,       pMemoryBarriers,
         bufferMemoryBarrierCount, pBufferMemoryBarriers,
@@ -459,7 +473,7 @@ namespace dxvk {
             uint32_t                offset,
             uint32_t                size,
       const void*                   pValues) {
-      m_vkd->vkCmdPushConstants(m_buffer,
+      m_vkd->vkCmdPushConstants(m_execBuffer,
         layout, stageFlags, offset, size, pValues);
     }
     
@@ -468,7 +482,9 @@ namespace dxvk {
             VkQueryPool             queryPool,
             uint32_t                firstQuery,
             uint32_t                queryCount) {
-      m_vkd->vkCmdResetQueryPool(m_buffer,
+      m_cmdBuffersUsed.set(DxvkCmdBufferFlag::InitBuffer);
+      
+      m_vkd->vkCmdResetQueryPool(m_initBuffer,
         queryPool, firstQuery, queryCount);
     }
     
@@ -480,7 +496,7 @@ namespace dxvk {
             VkImageLayout           dstImageLayout,
             uint32_t                regionCount,
       const VkImageResolve*         pRegions) {
-      m_vkd->vkCmdResolveImage(m_buffer,
+      m_vkd->vkCmdResolveImage(m_execBuffer,
         srcImage, srcImageLayout,
         dstImage, dstImageLayout,
         regionCount, pRegions);
@@ -492,21 +508,32 @@ namespace dxvk {
             VkDeviceSize            dstOffset,
             VkDeviceSize            dataSize,
       const void*                   pData) {
-      m_vkd->vkCmdUpdateBuffer(m_buffer,
+      m_vkd->vkCmdUpdateBuffer(m_execBuffer,
         dstBuffer, dstOffset, dataSize, pData);
     }
     
     
     void cmdSetBlendConstants(const float blendConstants[4]) {
-      m_vkd->vkCmdSetBlendConstants(m_buffer, blendConstants);
+      m_vkd->vkCmdSetBlendConstants(m_execBuffer, blendConstants);
     }
     
+
+    void cmdSetDepthBias(
+            float                   depthBiasConstantFactor,
+            float                   depthBiasClamp,
+            float                   depthBiasSlopeFactor) {
+      m_vkd->vkCmdSetDepthBias(m_execBuffer,
+        depthBiasConstantFactor,
+        depthBiasClamp,
+        depthBiasSlopeFactor);
+    }
+
     
     void cmdSetScissor(
             uint32_t                firstScissor,
             uint32_t                scissorCount,
       const VkRect2D*               scissors) {
-      m_vkd->vkCmdSetScissor(m_buffer,
+      m_vkd->vkCmdSetScissor(m_execBuffer,
         firstScissor, scissorCount, scissors);
     }
     
@@ -514,7 +541,7 @@ namespace dxvk {
     void cmdSetStencilReference(
             VkStencilFaceFlags      faceMask,
             uint32_t                reference) {
-      m_vkd->vkCmdSetStencilReference(m_buffer,
+      m_vkd->vkCmdSetStencilReference(m_execBuffer,
         faceMask, reference);
     }
     
@@ -523,7 +550,7 @@ namespace dxvk {
             uint32_t                firstViewport,
             uint32_t                viewportCount,
       const VkViewport*             viewports) {
-      m_vkd->vkCmdSetViewport(m_buffer,
+      m_vkd->vkCmdSetViewport(m_execBuffer,
         firstViewport, viewportCount, viewports);
     }
     
@@ -532,7 +559,7 @@ namespace dxvk {
             VkPipelineStageFlagBits pipelineStage,
             VkQueryPool             queryPool,
             uint32_t                query) {
-      m_vkd->vkCmdWriteTimestamp(m_buffer,
+      m_vkd->vkCmdWriteTimestamp(m_execBuffer,
         pipelineStage, queryPool, query);
     }
     
@@ -561,8 +588,10 @@ namespace dxvk {
     VkFence             m_fence;
     
     VkCommandPool       m_pool;
-    VkCommandBuffer     m_buffer;
+    VkCommandBuffer     m_execBuffer;
+    VkCommandBuffer     m_initBuffer;
     
+    DxvkCmdBufferFlags  m_cmdBuffersUsed;
     DxvkLifetimeTracker m_resources;
     DxvkDescriptorAlloc m_descAlloc;
     DxvkStagingAlloc    m_stagingAlloc;

@@ -5,6 +5,7 @@
 #include "dxvk_binding.h"
 #include "dxvk_constant_state.h"
 #include "dxvk_pipecache.h"
+#include "dxvk_pipecompiler.h"
 #include "dxvk_pipelayout.h"
 #include "dxvk_renderpass.h"
 #include "dxvk_resource.h"
@@ -46,15 +47,11 @@ namespace dxvk {
     VkVertexInputBindingDescription     ilBindings[DxvkLimits::MaxNumVertexBindings];
     uint32_t                            ilDivisors[DxvkLimits::MaxNumVertexBindings];
     
-    VkBool32                            rsEnableDepthClamp;
-    VkBool32                            rsEnableDiscard;
+    VkBool32                            rsDepthClampEnable;
+    VkBool32                            rsDepthBiasEnable;
     VkPolygonMode                       rsPolygonMode;
     VkCullModeFlags                     rsCullMode;
     VkFrontFace                         rsFrontFace;
-    VkBool32                            rsDepthBiasEnable;
-    float                               rsDepthBiasConstant;
-    float                               rsDepthBiasClamp;
-    float                               rsDepthBiasSlope;
     uint32_t                            rsViewportCount;
     
     VkSampleCountFlagBits               msSampleCount;
@@ -64,17 +61,15 @@ namespace dxvk {
     
     VkBool32                            dsEnableDepthTest;
     VkBool32                            dsEnableDepthWrite;
-    VkBool32                            dsEnableDepthBounds;
     VkBool32                            dsEnableStencilTest;
     VkCompareOp                         dsDepthCompareOp;
     VkStencilOpState                    dsStencilOpFront;
     VkStencilOpState                    dsStencilOpBack;
-    float                               dsDepthBoundsMin;
-    float                               dsDepthBoundsMax;
     
     VkBool32                            omEnableLogicOp;
     VkLogicOp                           omLogicOp;
     VkPipelineColorBlendAttachmentState omBlendAttachments[MaxNumRenderTargets];
+    VkComponentMapping                  omComponentMapping[MaxNumRenderTargets];
   };
   
   
@@ -91,6 +86,74 @@ namespace dxvk {
   
   
   /**
+   * \brief Graphics pipeline instance
+   * 
+   * Stores a state vector and the
+   * corresponding pipeline handle.
+   */
+  class DxvkGraphicsPipelineInstance : public RcObject {
+    friend class DxvkGraphicsPipeline;
+  public:
+    
+    DxvkGraphicsPipelineInstance(
+      const Rc<vk::DeviceFn>&               vkd,
+      const DxvkGraphicsPipelineStateInfo&  stateVector,
+            VkRenderPass                    renderPass,
+            VkPipeline                      pipeline);
+    
+    ~DxvkGraphicsPipelineInstance();
+    
+    /**
+     * \brief Checks for matching pipeline state
+     * 
+     * \param [in] stateVector Graphics pipeline state
+     * \param [in] renderPass Render pass handle
+     * \returns \c true if the specialization is compatible
+     */
+    bool isCompatible(
+      const DxvkGraphicsPipelineStateInfo&  stateVector,
+            VkRenderPass                    renderPass) const {
+      return m_renderPass  == renderPass
+          && m_stateVector == stateVector;
+    }
+    
+    /**
+     * \brief Sets the optimized pipeline handle
+     * 
+     * If an optimized pipeline handle has already been
+     * set up, this method will fail and the new pipeline
+     * handle should be destroyed.
+     * \param [in] pipeline The optimized pipeline
+     */
+    bool setPipeline(VkPipeline pipeline) {
+      VkPipeline expected = VK_NULL_HANDLE;
+      return m_pipeline.compare_exchange_strong(expected, pipeline);
+    }
+    
+    /**
+     * \brief Retrieves pipeline
+     * 
+     * Returns the optimized version of the pipeline if
+     * if has been set, or the base pipeline if not.
+     * \returns The pipeline handle
+     */
+    VkPipeline getPipeline() const {
+      return m_pipeline.load();
+    }
+    
+  private:
+    
+    const Rc<vk::DeviceFn> m_vkd;
+    
+    DxvkGraphicsPipelineStateInfo m_stateVector;
+    VkRenderPass                  m_renderPass;
+
+    std::atomic<VkPipeline>       m_pipeline;
+    
+  };
+  
+  
+  /**
    * \brief Graphics pipeline
    * 
    * Stores the pipeline layout as well as methods to
@@ -102,13 +165,14 @@ namespace dxvk {
   public:
     
     DxvkGraphicsPipeline(
-      const DxvkDevice*             device,
-      const Rc<DxvkPipelineCache>&  cache,
-      const Rc<DxvkShader>&         vs,
-      const Rc<DxvkShader>&         tcs,
-      const Rc<DxvkShader>&         tes,
-      const Rc<DxvkShader>&         gs,
-      const Rc<DxvkShader>&         fs);
+      const DxvkDevice*               device,
+      const Rc<DxvkPipelineCache>&    cache,
+      const Rc<DxvkPipelineCompiler>& compiler,
+      const Rc<DxvkShader>&           vs,
+      const Rc<DxvkShader>&           tcs,
+      const Rc<DxvkShader>&           tes,
+      const Rc<DxvkShader>&           gs,
+      const Rc<DxvkShader>&           fs);
     ~DxvkGraphicsPipeline();
     
     /**
@@ -119,8 +183,8 @@ namespace dxvk {
      * slots used by the pipeline.
      * \returns Pipeline layout
      */
-    Rc<DxvkPipelineLayout> layout() const {
-      return m_layout;
+    DxvkPipelineLayout* layout() const {
+      return m_layout.ptr();
     }
     
     /**
@@ -131,12 +195,24 @@ namespace dxvk {
      * \param [in] state Pipeline state vector
      * \param [in] renderPass The render pass
      * \param [in,out] stats Stat counter
+     * \param [in] async Compile asynchronously
      * \returns Pipeline handle
      */
     VkPipeline getPipelineHandle(
-      const DxvkGraphicsPipelineStateInfo& state,
-      const DxvkRenderPass&                renderPass,
-            DxvkStatCounters&              stats);
+      const DxvkGraphicsPipelineStateInfo&    state,
+      const DxvkRenderPass&                   renderPass,
+            DxvkStatCounters&                 stats,
+            bool                              async);
+    
+    /**
+     * \brief Compiles optimized pipeline
+     * 
+     * Compiles an optimized version of a pipeline
+     * and makes it available to the system.
+     * \param [in] instance The pipeline instance
+     */
+    void compileInstance(
+      const Rc<DxvkGraphicsPipelineInstance>& instance);
     
   private:
     
@@ -149,8 +225,9 @@ namespace dxvk {
     const DxvkDevice* const m_device;
     const Rc<vk::DeviceFn>  m_vkd;
     
-    Rc<DxvkPipelineCache>   m_cache;
-    Rc<DxvkPipelineLayout>  m_layout;
+    Rc<DxvkPipelineCache>     m_cache;
+    Rc<DxvkPipelineCompiler>  m_compiler;
+    Rc<DxvkPipelineLayout>    m_layout;
     
     Rc<DxvkShaderModule>  m_vs;
     Rc<DxvkShaderModule>  m_tcs;
@@ -163,22 +240,21 @@ namespace dxvk {
     
     DxvkGraphicsCommonPipelineStateInfo m_common;
     
-    sync::Spinlock              m_mutex;
-    std::vector<PipelineStruct> m_pipelines;
+    // List of pipeline instances, shared between threads
+    alignas(CACHE_LINE_SIZE) sync::Spinlock       m_mutex;
+    std::vector<Rc<DxvkGraphicsPipelineInstance>> m_pipelines;
     
-    VkPipeline m_basePipeline = VK_NULL_HANDLE;
+    // Pipeline handles used for derivative pipelines
+    std::atomic<VkPipeline> m_basePipeline = { VK_NULL_HANDLE };
     
-    bool findPipeline(
+    DxvkGraphicsPipelineInstance* findInstance(
       const DxvkGraphicsPipelineStateInfo& state,
-            VkRenderPass                   renderPass,
-            VkPipeline&                    pipeline) const;
+            VkRenderPass                   renderPass) const;
     
     VkPipeline compilePipeline(
       const DxvkGraphicsPipelineStateInfo& state,
             VkRenderPass                   renderPass,
             VkPipeline                     baseHandle) const;
-    
-    void destroyPipelines();
     
     bool validatePipelineState(
       const DxvkGraphicsPipelineStateInfo& state) const;

@@ -60,7 +60,6 @@ namespace dxvk {
     uint32_t        array   = 0;
     uint32_t        ms      = 0;
     uint32_t        sampled = 0;
-    uint32_t        layered = 0;
     VkImageViewType vtype   = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
   };
   
@@ -164,9 +163,20 @@ namespace dxvk {
       return n[m_mask & 0xF];
     }
     
+    uint32_t minComponents() const {
+      const uint8_t n[16] = { 0, 1, 2, 2, 3, 3, 3, 3,
+                              4, 4, 4, 4, 4, 4, 4, 4 };
+      return n[m_mask & 0xF];
+    }
+    
     bool operator == (const DxbcRegMask& other) const { return m_mask == other.m_mask; }
     bool operator != (const DxbcRegMask& other) const { return m_mask != other.m_mask; }
     
+    DxbcRegMask& operator |= (const DxbcRegMask& other) {
+      m_mask |= other.m_mask;
+      return *this;
+    }
+
     static DxbcRegMask firstN(uint32_t n) {
       return DxbcRegMask(n >= 1, n >= 2, n >= 3, n >= 4);
     }

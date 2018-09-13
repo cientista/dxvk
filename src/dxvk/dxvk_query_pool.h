@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "dxvk_query.h"
 
 namespace dxvk {
@@ -9,6 +11,9 @@ namespace dxvk {
   
   /**
    * \brief Query range
+   *
+   * Stores an index of a query in a query pool,
+   * and the number of queries to track.
    */
   struct DxvkQueryRange {
     Rc<DxvkQueryPool> queryPool;
@@ -97,5 +102,5 @@ namespace dxvk {
     uint32_t m_queryRangeLength = 0;
     
   };
-  
+
 }

@@ -79,6 +79,10 @@ namespace dxvk {
             uint32_t                entryPointId,
             spv::ExecutionMode      executionMode);
     
+    void setInvocations(
+            uint32_t                entryPointId,
+            uint32_t                invocations);
+    
     void setLocalSize(
             uint32_t                entryPointId,
             uint32_t                x,
@@ -153,6 +157,10 @@ namespace dxvk {
     
     uint32_t specConstBool(
             bool                    v);
+    
+    uint32_t specConst32(
+            uint32_t                typeId,
+            uint32_t                value);
     
     void decorate(
             uint32_t                object,
@@ -535,6 +543,11 @@ namespace dxvk {
             uint32_t                resultType,
             uint32_t                operand);
     
+    uint32_t opVectorExtractDynamic(
+            uint32_t                resultType,
+            uint32_t                vector,
+            uint32_t                index);
+    
     uint32_t opVectorShuffle(
             uint32_t                resultType,
             uint32_t                vectorLeft,
@@ -825,6 +838,10 @@ namespace dxvk {
             uint32_t                operand);
     
     uint32_t opTrunc(
+            uint32_t                resultType,
+            uint32_t                operand);
+    
+    uint32_t opFConvert(
             uint32_t                resultType,
             uint32_t                operand);
     

@@ -5,6 +5,7 @@
 
 #include "dxvk_compute.h"
 #include "dxvk_graphics.h"
+#include "dxvk_pipecompiler.h"
 
 namespace dxvk {
   
@@ -72,7 +73,6 @@ namespace dxvk {
      * \returns Compute pipeline object
      */
     Rc<DxvkComputePipeline> createComputePipeline(
-      const Rc<DxvkPipelineCache>&  cache,
       const Rc<DxvkShader>&         cs);
     
     /**
@@ -89,7 +89,6 @@ namespace dxvk {
      * \returns Graphics pipeline object
      */
     Rc<DxvkGraphicsPipeline> createGraphicsPipeline(
-      const Rc<DxvkPipelineCache>&  cache,
       const Rc<DxvkShader>&         vs,
       const Rc<DxvkShader>&         tcs,
       const Rc<DxvkShader>&         tes,
@@ -98,7 +97,9 @@ namespace dxvk {
     
   private:
     
-    const DxvkDevice* m_device;
+    const DxvkDevice*         m_device;
+    Rc<DxvkPipelineCache>     m_cache;
+    Rc<DxvkPipelineCompiler>  m_compiler;
     
     std::mutex m_mutex;
     

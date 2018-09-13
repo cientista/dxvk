@@ -1,13 +1,9 @@
 #pragma once
 
-#include <initializer_list>
-#include <memory>
+#include <mutex>
 #include <unordered_map>
-#include <vector>
-#include <string>
 
-#include <dxvk_adapter.h>
-
+#include "dxgi_format.h"
 #include "dxgi_interfaces.h"
 #include "dxgi_output.h"
 
@@ -47,14 +43,21 @@ namespace dxvk {
     HRESULT STDMETHODCALLTYPE GetDesc1(
             DXGI_ADAPTER_DESC1*       pDesc) final;
     
+    HRESULT STDMETHODCALLTYPE GetDesc2(
+            DXGI_ADAPTER_DESC2*       pDesc) final;
+    
     Rc<DxvkAdapter> STDMETHODCALLTYPE GetDXVKAdapter() final;
     
     HRESULT STDMETHODCALLTYPE CreateDevice(
             IDXGIObject*              pContainer,
-      const VkPhysicalDeviceFeatures* pFeatures,
+      const DxvkDeviceFeatures*       pFeatures,
             IDXGIVkDevice**           ppDevice) final;
     
     DXGI_VK_FORMAT_INFO STDMETHODCALLTYPE LookupFormat(
+            DXGI_FORMAT               Format,
+            DXGI_VK_FORMAT_MODE       Mode) final;
+    
+    DXGI_VK_FORMAT_FAMILY STDMETHODCALLTYPE LookupFormatFamily(
             DXGI_FORMAT               Format,
             DXGI_VK_FORMAT_MODE       Mode) final;
     
@@ -76,6 +79,8 @@ namespace dxvk {
     
     Com<DxgiFactory>  m_factory;
     Rc<DxvkAdapter>   m_adapter;
+    
+    DXGIVkFormatTable m_formats;
     
     std::mutex        m_outputMutex;
     OutputMap         m_outputData;

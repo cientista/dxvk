@@ -14,8 +14,8 @@ namespace dxvk {
     
   public:
     
-    D3D11VkBackBuffer(D3D11Texture2D* pTexture)
-    : m_texture(pTexture) { }
+    D3D11VkBackBuffer(D3D11Texture2D* pTexture);
+    ~D3D11VkBackBuffer();
     
     HRESULT STDMETHODCALLTYPE QueryInterface(
             REFIID                  riid,
@@ -25,7 +25,7 @@ namespace dxvk {
     
   public:
     
-    Com<D3D11Texture2D> m_texture;
+    D3D11Texture2D* m_texture;
     
   };
   
@@ -54,7 +54,7 @@ namespace dxvk {
             void**                  ppvObject);
     
     HRESULT STDMETHODCALLTYPE CreateSwapChainBackBuffer(
-      const DXGI_SWAP_CHAIN_DESC*   pSwapChainDesc,
+      const DXGI_SWAP_CHAIN_DESC1*  pSwapChainDesc,
             IDXGIVkBackBuffer**     ppInterface);
     
     HRESULT STDMETHODCALLTYPE FlushRenderingCommands();

@@ -10,6 +10,7 @@
 #include "dxvk_image.h"
 #include "dxvk_memory.h"
 #include "dxvk_meta_clear.h"
+#include "dxvk_options.h"
 #include "dxvk_pipecache.h"
 #include "dxvk_pipemanager.h"
 #include "dxvk_queue.h"
@@ -26,6 +27,14 @@
 namespace dxvk {
   
   class DxvkInstance;
+
+  /**
+   * \brief Device options
+   */
+  struct DxvkDeviceOptions {
+    uint32_t maxNumDynamicUniformBuffers = 0;
+    uint32_t maxNumDynamicStorageBuffers = 0;
+  };
   
   /**
    * \brief Device queue
@@ -56,8 +65,8 @@ namespace dxvk {
     DxvkDevice(
       const Rc<DxvkAdapter>&          adapter,
       const Rc<vk::DeviceFn>&         vkd,
-      const Rc<DxvkDeviceExtensions>& extensions,
-      const VkPhysicalDeviceFeatures& features);
+      const DxvkDeviceExtensions&     extensions,
+      const DxvkDeviceFeatures&       features);
       
     ~DxvkDevice();
     
@@ -75,6 +84,14 @@ namespace dxvk {
      */
     VkDevice handle() const {
       return m_vkd->device();
+    }
+
+    /**
+     * \brief Device options
+     * \returns Device options
+     */
+    const DxvkOptions& config() const {
+      return m_options;
     }
     
     /**
@@ -98,22 +115,28 @@ namespace dxvk {
     Rc<DxvkAdapter> adapter() const {
       return m_adapter;
     }
-    
+
     /**
      * \brief Enabled device extensions
      * \returns Enabled device extensions
      */
     const DxvkDeviceExtensions& extensions() const {
-      return *m_extensions;
+      return m_extensions;
     }
     
     /**
      * \brief Enabled device features
      * \returns Enabled features
      */
-    const VkPhysicalDeviceFeatures& features() const {
+    const DxvkDeviceFeatures& features() const {
       return m_features;
     }
+    
+    /**
+     * \brief Retrieves device options
+     * \returns Device options
+     */
+    DxvkDeviceOptions options() const;
     
     /**
      * \brief Allocates a physical buffer
@@ -220,14 +243,6 @@ namespace dxvk {
       const DxvkImageViewCreateInfo&  createInfo);
     
     /**
-     * \brief Creates a query pool
-     * \param [in] queryType Query type
-     */
-    Rc<DxvkQueryPool> createQueryPool(
-            VkQueryType               queryType,
-            uint32_t                  queryCount);
-    
-    /**
      * \brief Creates a sampler object
      * 
      * \param [in] createInfo Sampler parameters
@@ -278,6 +293,12 @@ namespace dxvk {
      * usage, draw calls, etc.
      */
     DxvkStatCounters getStatCounters();
+
+    /**
+     * \brief Retreves current frame ID
+     * \returns Current frame ID
+     */
+    uint32_t getCurrentFrameId() const;
     
     /**
      * \brief Initializes dummy resources
@@ -333,6 +354,17 @@ namespace dxvk {
     void unlockSubmission() {
       m_submissionLock.unlock();
     }
+
+    /**
+     * \brief Number of pending submissions
+     * 
+     * A return value of 0 indicates
+     * that the GPU is currently idle.
+     * \returns Pending submission count
+     */
+    uint32_t pendingSubmissions() const {
+      return m_submissionQueue.pendingSubmissions();
+    }
     
     /**
      * \brief Waits until the device becomes idle
@@ -346,17 +378,21 @@ namespace dxvk {
     
   private:
     
+    DxvkOptions                 m_options;
+
     Rc<DxvkAdapter>             m_adapter;
     Rc<vk::DeviceFn>            m_vkd;
-    Rc<DxvkDeviceExtensions>    m_extensions;
-    VkPhysicalDeviceFeatures    m_features;
+    DxvkDeviceExtensions        m_extensions;
+
+    DxvkDeviceFeatures          m_features;
     VkPhysicalDeviceProperties  m_properties;
     
     Rc<DxvkMemoryAllocator>     m_memory;
     Rc<DxvkRenderPassPool>      m_renderPassPool;
-    Rc<DxvkPipelineCache>       m_pipelineCache;
     Rc<DxvkPipelineManager>     m_pipelineManager;
     Rc<DxvkMetaClearObjects>    m_metaClearObjects;
+    Rc<DxvkMetaMipGenObjects>   m_metaMipGenObjects;
+    Rc<DxvkMetaResolveObjects>  m_metaResolveObjects;
     
     DxvkUnboundResources        m_unboundResources;
     

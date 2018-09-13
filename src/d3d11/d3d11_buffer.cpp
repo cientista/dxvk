@@ -9,10 +9,11 @@ namespace dxvk {
   D3D11Buffer::D3D11Buffer(
           D3D11Device*                pDevice,
     const D3D11_BUFFER_DESC*          pDesc)
-  : m_device    (pDevice),
-    m_desc      (*pDesc),
-    m_buffer    (CreateBuffer(pDesc)),
-    m_bufferInfo{ m_buffer->slice() } {
+  : m_device      (pDevice),
+    m_desc        (*pDesc),
+    m_buffer      (CreateBuffer(pDesc)),
+    m_mappedSlice (m_buffer->slice()),
+    m_d3d10       (this) {
     
   }
   
@@ -30,6 +31,13 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Buffer)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+    
+    if (riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10Resource)
+     || riid == __uuidof(ID3D10Buffer)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     
@@ -65,6 +73,28 @@ namespace dxvk {
   }
   
   
+  bool D3D11Buffer::CheckViewCompatibility(
+          UINT                BindFlags,
+          DXGI_FORMAT         Format) const {
+    // Check whether the given bind flags are supported
+    VkBufferUsageFlags usage = GetBufferUsageFlags(BindFlags);
+
+    if ((m_buffer->info().usage & usage) != usage)
+      return false;
+
+    // Structured buffer views use no format
+    if (Format == DXGI_FORMAT_UNKNOWN)
+      return (m_desc.MiscFlags & D3D11_RESOURCE_MISC_BUFFER_STRUCTURED) != 0;
+
+    // Check whether the given combination of buffer view
+    // type and view format is supported by the device
+    DXGI_VK_FORMAT_INFO viewFormat = m_device->LookupFormat(Format, DXGI_VK_FORMAT_MODE_ANY);
+    VkFormatFeatureFlags features = GetBufferFormatFeatures(BindFlags);
+
+    return CheckFormatFeatureSupport(viewFormat.Format, features);
+  }
+
+
   Rc<DxvkBuffer> D3D11Buffer::CreateBuffer(
     const D3D11_BUFFER_DESC* pDesc) const {
     DxvkBufferCreateInfo  info;
@@ -127,24 +157,45 @@ namespace dxvk {
       info.access |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
     }
     
-    return m_device->GetDXVKDevice()->createBuffer(
-      info, GetMemoryFlags(pDesc));
-  }
-  
-  
-  VkMemoryPropertyFlags D3D11Buffer::GetMemoryFlags(
-    const D3D11_BUFFER_DESC* pDesc) const {
-    // Default constant buffers may get updated frequently with calls
-    // to D3D11DeviceContext::UpdateSubresource, so we'll map them to
-    // host memory in order to allow direct access to the buffer
-    if ((pDesc->Usage == D3D11_USAGE_DEFAULT)
-     && (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER)) {
-      return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-           | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    // Default constant buffers may get updated frequently, in which
+    // case mapping the buffer is faster than using update commands.
+    VkMemoryPropertyFlags memoryFlags = GetMemoryFlagsForUsage(pDesc->Usage);
+
+    if ((pDesc->Usage == D3D11_USAGE_DEFAULT) && (pDesc->BindFlags & D3D11_BIND_CONSTANT_BUFFER)) {
+      info.stages |= VK_PIPELINE_STAGE_HOST_BIT;
+      info.access |= VK_ACCESS_HOST_WRITE_BIT;
+      
+      memoryFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                  | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     }
     
-    // Use default memory flags for the intended use
-    return GetMemoryFlagsForUsage(pDesc->Usage);
+    // AMD cards have a device-local, host-visible memory type where
+    // we can put dynamic resources that need fast access by the GPU
+    if ((pDesc->Usage == D3D11_USAGE_DYNAMIC) && (pDesc->BindFlags & (
+        D3D11_BIND_VERTEX_BUFFER   | D3D11_BIND_INDEX_BUFFER     |
+        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS |
+        D3D11_BIND_CONSTANT_BUFFER)))
+      memoryFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+
+    return m_device->GetDXVKDevice()->createBuffer(info, memoryFlags);
+  }
+
+
+  BOOL D3D11Buffer::CheckFormatFeatureSupport(
+          VkFormat              Format,
+          VkFormatFeatureFlags  Features) const {
+    VkFormatProperties properties = m_device->GetDXVKDevice()->adapter()->formatProperties(Format);
+    return (properties.bufferFeatures & Features) == Features;
   }
   
+
+  D3D11Buffer* GetCommonBuffer(ID3D11Resource* pResource) {
+    D3D11_RESOURCE_DIMENSION dimension = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    pResource->GetType(&dimension);
+
+    return dimension == D3D11_RESOURCE_DIMENSION_BUFFER
+      ? static_cast<D3D11Buffer*>(pResource)
+      : nullptr;
+  }
+
 }

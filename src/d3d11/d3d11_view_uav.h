@@ -8,11 +8,17 @@ namespace dxvk {
   
   class D3D11Device;
   
+  /**
+   * \brief UAV counter structure
+   * 
+   * Data structure passed to shaders that use
+   * append/consume buffer functionality.
+   */
   struct D3D11UavCounter {
     uint32_t atomicCtr;
   };
-  
-  
+
+
   /**
    * \brief Unordered access view
    * 
@@ -25,18 +31,9 @@ namespace dxvk {
   public:
     
     D3D11UnorderedAccessView(
-            D3D11Device*                      device,
-            ID3D11Resource*                   resource,
-      const D3D11_UNORDERED_ACCESS_VIEW_DESC& desc,
-      const Rc<DxvkBufferView>&               bufferView,
-      const DxvkBufferSlice&                  counterSlice);
-    
-    D3D11UnorderedAccessView(
-            D3D11Device*                      device,
-            ID3D11Resource*                   resource,
-      const D3D11_UNORDERED_ACCESS_VIEW_DESC& desc,
-      const Rc<DxvkImageView>&                imageView,
-      const DxvkBufferSlice&                  counterSlice);
+            D3D11Device*                      pDevice,
+            ID3D11Resource*                   pResource,
+      const D3D11_UNORDERED_ACCESS_VIEW_DESC* pDesc);
     
     ~D3D11UnorderedAccessView();
     
@@ -77,7 +74,7 @@ namespace dxvk {
   private:
     
     Com<D3D11Device>                  m_device;
-    Com<ID3D11Resource>               m_resource;
+    ID3D11Resource*                   m_resource;
     D3D11_UNORDERED_ACCESS_VIEW_DESC  m_desc;
     Rc<DxvkBufferView>                m_bufferView;
     Rc<DxvkImageView>                 m_imageView;

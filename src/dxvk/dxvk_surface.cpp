@@ -1,4 +1,5 @@
 #include "dxvk_surface.h"
+#include "dxvk_format.h"
 
 #include "../util/util_math.h"
 
@@ -50,6 +51,18 @@ namespace dxvk {
             return fmt;
         }
       }
+
+      // If that didn't work, we'll fall back to a format
+      // which has similar properties to the preferred one
+      DxvkFormatFlags prefFlags = imageFormatInfo(preferred[0].format)->flags;
+
+      for (auto fmt : m_surfaceFormats) {
+        auto currFlags = imageFormatInfo(fmt.format)->flags;
+
+        if ((currFlags & DxvkFormatFlag::ColorSpaceSrgb)
+         == (prefFlags & DxvkFormatFlag::ColorSpaceSrgb))
+          return fmt;
+      }
     }
     
     // Otherwise, fall back to the first format
@@ -74,12 +87,15 @@ namespace dxvk {
   
   uint32_t DxvkSurface::pickImageCount(
     const VkSurfaceCapabilitiesKHR& caps,
-          VkPresentModeKHR          mode) const {
+          VkPresentModeKHR          mode,
+          uint32_t                  preferred) const {
     uint32_t count = caps.minImageCount;
     
-    if (mode == VK_PRESENT_MODE_MAILBOX_KHR
-     || mode == VK_PRESENT_MODE_FIFO_KHR)
-      count += 1;
+    if (mode != VK_PRESENT_MODE_IMMEDIATE_KHR)
+      count = caps.minImageCount + 1;
+    
+    if (count < preferred)
+      count = preferred;
     
     if (count > caps.maxImageCount && caps.maxImageCount != 0)
       count = caps.maxImageCount;

@@ -6,6 +6,8 @@
 #include "../dxbc/dxbc_module.h"
 #include "../dxvk/dxvk_device.h"
 
+#include "../d3d10/d3d10_shader.h"
+
 #include "../util/sha1/sha1_util.h"
 
 #include "../util/util_env.h"
@@ -57,26 +59,31 @@ namespace dxvk {
   
   
   /**
-   * \brief Shader module
+   * \brief Common shader object
    * 
    * Stores the compiled SPIR-V shader and the SHA-1
    * hash of the original DXBC shader, which can be
    * used to identify the shader.
    */
-  class D3D11ShaderModule {
+  class D3D11CommonShader {
     
   public:
     
-    D3D11ShaderModule();
-    D3D11ShaderModule(
+    D3D11CommonShader();
+    D3D11CommonShader(
+            D3D11Device*    pDevice,
       const D3D11ShaderKey* pShaderKey,
-      const DxbcOptions*    pDxbcOptions,
+      const DxbcModuleInfo* pDxbcModuleInfo,
       const void*           pShaderBytecode,
             size_t          BytecodeLength);
-    ~D3D11ShaderModule();
-    
+    ~D3D11CommonShader();
+
     Rc<DxvkShader> GetShader() const {
       return m_shader;
+    }
+
+    Rc<DxvkBuffer> GetIcb() const {
+      return m_buffer;
     }
     
     std::string GetName() const {
@@ -87,6 +94,7 @@ namespace dxvk {
     
     std::string    m_name;
     Rc<DxvkShader> m_shader;
+    Rc<DxvkBuffer> m_buffer;
     
   };
   
@@ -98,13 +106,13 @@ namespace dxvk {
    * interfaces and stores the actual shader
    * module object.
    */
-  template<typename Base>
-  class D3D11Shader : public D3D11DeviceChild<Base> {
-    
+  template<typename D3D11Interface, typename D3D10Interface>
+  class D3D11Shader : public D3D11DeviceChild<D3D11Interface> {
+    using D3D10ShaderClass = D3D10Shader<D3D10Interface, D3D11Interface>;
   public:
     
-    D3D11Shader(D3D11Device* device, const D3D11ShaderModule& module)
-    : m_device(device), m_module(module) { }
+    D3D11Shader(D3D11Device* device, const D3D11CommonShader& shader)
+    : m_device(device), m_shader(shader), m_d3d10(this) { }
     
     ~D3D11Shader() { }
     
@@ -113,8 +121,15 @@ namespace dxvk {
       
       if (riid == __uuidof(IUnknown)
        || riid == __uuidof(ID3D11DeviceChild)
-       || riid == __uuidof(Base)) {
+       || riid == __uuidof(D3D11Interface)) {
         *ppvObject = ref(this);
+        return S_OK;
+      }
+      
+      if (riid == __uuidof(IUnknown)
+       || riid == __uuidof(ID3D10DeviceChild)
+       || riid == __uuidof(D3D10Interface)) {
+        *ppvObject = ref(&m_d3d10);
         return S_OK;
       }
       
@@ -126,27 +141,28 @@ namespace dxvk {
       *ppDevice = m_device.ref();
     }
     
-    Rc<DxvkShader> STDMETHODCALLTYPE GetShader() const {
-      return m_module.GetShader();
+    const D3D11CommonShader* GetCommonShader() const {
+      return &m_shader;
     }
-    
-    const std::string& GetName() const {
-      return m_module.GetName();
+
+    D3D10ShaderClass* GetD3D10Iface() {
+      return &m_d3d10;
     }
-    
+
   private:
     
     Com<D3D11Device>  m_device;
-    D3D11ShaderModule m_module;
+    D3D11CommonShader m_shader;
+    D3D10ShaderClass  m_d3d10;
     
   };
   
-  using D3D11VertexShader   = D3D11Shader<ID3D11VertexShader>;
-  using D3D11HullShader     = D3D11Shader<ID3D11HullShader>;
-  using D3D11DomainShader   = D3D11Shader<ID3D11DomainShader>;
-  using D3D11GeometryShader = D3D11Shader<ID3D11GeometryShader>;
-  using D3D11PixelShader    = D3D11Shader<ID3D11PixelShader>;
-  using D3D11ComputeShader  = D3D11Shader<ID3D11ComputeShader>;
+  using D3D11VertexShader   = D3D11Shader<ID3D11VertexShader,   ID3D10VertexShader>;
+  using D3D11HullShader     = D3D11Shader<ID3D11HullShader,     ID3D10DeviceChild>;
+  using D3D11DomainShader   = D3D11Shader<ID3D11DomainShader,   ID3D10DeviceChild>;
+  using D3D11GeometryShader = D3D11Shader<ID3D11GeometryShader, ID3D10GeometryShader>;
+  using D3D11PixelShader    = D3D11Shader<ID3D11PixelShader,    ID3D10PixelShader>;
+  using D3D11ComputeShader  = D3D11Shader<ID3D11ComputeShader,  ID3D10DeviceChild>;
   
   
   /**
@@ -164,8 +180,9 @@ namespace dxvk {
     D3D11ShaderModuleSet();
     ~D3D11ShaderModuleSet();
     
-    D3D11ShaderModule GetShaderModule(
-      const DxbcOptions*    pDxbcOptions,
+    D3D11CommonShader GetShaderModule(
+            D3D11Device*    pDevice,
+      const DxbcModuleInfo* pDxbcModuleInfo,
       const void*           pShaderBytecode,
             size_t          BytecodeLength,
             DxbcProgramType ProgramType);
@@ -176,7 +193,7 @@ namespace dxvk {
     
     std::unordered_map<
       D3D11ShaderKey,
-      D3D11ShaderModule,
+      D3D11CommonShader,
       D3D11ShaderKeyHash> m_modules;
     
   };

@@ -11,12 +11,14 @@
 namespace dxvk {
   
   struct D3D11DeferredContextMapEntry {
-    Com<ID3D11Resource> pResource;
-    UINT                Subresource;
-    D3D11_MAP           MapType;
-    UINT                RowPitch;
-    UINT                DepthPitch;
-    DxvkDataSlice       DataSlice;
+    Com<ID3D11Resource>     pResource;
+    UINT                    Subresource;
+    D3D11_MAP               MapType;
+    UINT                    RowPitch;
+    UINT                    DepthPitch;
+    DxvkDataSlice           DataSlice;
+    DxvkPhysicalBufferSlice BufferSlice;
+    void*                   MapPointer;
   };
   
   class D3D11DeferredContext : public D3D11DeviceContext {
@@ -31,6 +33,12 @@ namespace dxvk {
     D3D11_DEVICE_CONTEXT_TYPE STDMETHODCALLTYPE GetType() final;
     
     UINT STDMETHODCALLTYPE GetContextFlags() final;
+    
+    HRESULT STDMETHODCALLTYPE GetData(
+            ID3D11Asynchronous*               pAsync,
+            void*                             pData,
+            UINT                              DataSize,
+            UINT                              GetDataFlags) final;
     
     void STDMETHODCALLTYPE Flush() final;
     
@@ -89,7 +97,7 @@ namespace dxvk {
     
     Com<D3D11CommandList> CreateCommandList();
     
-    void EmitCsChunk(Rc<DxvkCsChunk>&& chunk) final;
+    void EmitCsChunk(DxvkCsChunkRef&& chunk) final;
     
     auto FindMapEntry(ID3D11Resource* pResource, UINT Subresource) {
       return std::find_if(m_mappedResources.rbegin(), m_mappedResources.rend(),

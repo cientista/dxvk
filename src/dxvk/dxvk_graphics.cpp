@@ -3,6 +3,7 @@
 
 #include "dxvk_device.h"
 #include "dxvk_graphics.h"
+#include "dxvk_spec_const.h"
 
 namespace dxvk {
   
@@ -34,22 +35,45 @@ namespace dxvk {
   }
   
   
+  DxvkGraphicsPipelineInstance::DxvkGraphicsPipelineInstance(
+    const Rc<vk::DeviceFn>&               vkd,
+    const DxvkGraphicsPipelineStateInfo&  stateVector,
+          VkRenderPass                    renderPass,
+          VkPipeline                      pipeline)
+  : m_vkd         (vkd),
+    m_stateVector (stateVector),
+    m_renderPass  (renderPass),
+    m_pipeline    (pipeline) {
+    
+  }
+  
+  
+  DxvkGraphicsPipelineInstance::~DxvkGraphicsPipelineInstance() {
+    m_vkd->vkDestroyPipeline(m_vkd->device(), m_pipeline, nullptr);
+  }
+  
+  
   DxvkGraphicsPipeline::DxvkGraphicsPipeline(
-    const DxvkDevice*             device,
-    const Rc<DxvkPipelineCache>&  cache,
-    const Rc<DxvkShader>&         vs,
-    const Rc<DxvkShader>&         tcs,
-    const Rc<DxvkShader>&         tes,
-    const Rc<DxvkShader>&         gs,
-    const Rc<DxvkShader>&         fs)
+    const DxvkDevice*               device,
+    const Rc<DxvkPipelineCache>&    cache,
+    const Rc<DxvkPipelineCompiler>& compiler,
+    const Rc<DxvkShader>&           vs,
+    const Rc<DxvkShader>&           tcs,
+    const Rc<DxvkShader>&           tes,
+    const Rc<DxvkShader>&           gs,
+    const Rc<DxvkShader>&           fs)
   : m_device(device), m_vkd(device->vkd()),
-    m_cache(cache) {
+    m_cache(cache), m_compiler(compiler) {
     DxvkDescriptorSlotMapping slotMapping;
     if (vs  != nullptr) vs ->defineResourceSlots(slotMapping);
     if (tcs != nullptr) tcs->defineResourceSlots(slotMapping);
     if (tes != nullptr) tes->defineResourceSlots(slotMapping);
     if (gs  != nullptr) gs ->defineResourceSlots(slotMapping);
     if (fs  != nullptr) fs ->defineResourceSlots(slotMapping);
+    
+    slotMapping.makeDescriptorsDynamic(
+      device->options().maxNumDynamicUniformBuffers,
+      device->options().maxNumDynamicStorageBuffers);
     
     m_layout = new DxvkPipelineLayout(m_vkd,
       slotMapping.bindingCount(),
@@ -71,63 +95,101 @@ namespace dxvk {
   
   
   DxvkGraphicsPipeline::~DxvkGraphicsPipeline() {
-    this->destroyPipelines();
+    
   }
   
   
   VkPipeline DxvkGraphicsPipeline::getPipelineHandle(
     const DxvkGraphicsPipelineStateInfo& state,
     const DxvkRenderPass&                renderPass,
-          DxvkStatCounters&              stats) {
-    VkPipeline pipeline = VK_NULL_HANDLE;
+          DxvkStatCounters&              stats,
+          bool                           async) {
     VkRenderPass renderPassHandle = renderPass.getDefaultHandle();
-    
+
     { std::lock_guard<sync::Spinlock> lock(m_mutex);
       
-      if (this->findPipeline(state, renderPassHandle, pipeline))
-        return pipeline;
+      DxvkGraphicsPipelineInstance* pipeline =
+        this->findInstance(state, renderPassHandle);
+      
+      if (pipeline != nullptr)
+        return pipeline->getPipeline();
     }
     
-    // If no pipeline exists with the given state vector,
-    // create a new one and add it to the pipeline set.
-    VkPipeline newPipeline = this->validatePipelineState(state)
-      ? this->compilePipeline(state, renderPassHandle, m_basePipeline)
-      : VK_NULL_HANDLE;
+    // If the pipeline state vector is invalid, don't try
+    // to create a new pipeline, it won't work anyway.
+    if (!this->validatePipelineState(state))
+      return VK_NULL_HANDLE;
+    
+    // If no pipeline instance exists with the given state
+    // vector, create a new one and add it to the list.
+    VkPipeline newPipelineBase   = m_basePipeline.load();
+    VkPipeline newPipelineHandle = VK_NULL_HANDLE;
+    
+    if (!async) {
+      newPipelineHandle = this->compilePipeline(
+        state, renderPassHandle, newPipelineBase);
+    }
+    
+    Rc<DxvkGraphicsPipelineInstance> newPipeline =
+      new DxvkGraphicsPipelineInstance(m_device->vkd(),
+        state, renderPassHandle, newPipelineHandle);
     
     { std::lock_guard<sync::Spinlock> lock(m_mutex);
       
       // Discard the pipeline if another thread
       // was faster compiling the same pipeline
-      if (this->findPipeline(state, renderPassHandle, pipeline)) {
-        m_vkd->vkDestroyPipeline(m_vkd->device(), newPipeline, nullptr);
-        return pipeline;
-      }
+      DxvkGraphicsPipelineInstance* pipeline =
+        this->findInstance(state, renderPassHandle);
+      
+      if (pipeline != nullptr)
+        return pipeline->getPipeline();
       
       // Add new pipeline to the set
-      m_pipelines.push_back({ state, renderPassHandle, newPipeline });
-      
-      if (m_basePipeline == VK_NULL_HANDLE)
-        m_basePipeline = newPipeline;
-      
+      m_pipelines.push_back(newPipeline);
+
       stats.addCtr(DxvkStatCounter::PipeCountGraphics, 1);
-      return newPipeline;
+    }
+    
+    // Use the new pipeline as the base pipeline for derivative pipelines
+    if (newPipelineBase == VK_NULL_HANDLE && newPipelineHandle != VK_NULL_HANDLE)
+      m_basePipeline.compare_exchange_strong(newPipelineBase, newPipelineHandle);
+    
+    // Compile pipeline asynchronously if requested
+    if (async)
+      m_compiler->queueCompilation(this, newPipeline);
+    
+    return newPipelineHandle;
+  }
+  
+  
+  void DxvkGraphicsPipeline::compileInstance(
+    const Rc<DxvkGraphicsPipelineInstance>& instance) {
+    // Compile an optimized version of the pipeline
+    VkPipeline newPipelineBase   = m_basePipeline.load();
+    VkPipeline newPipelineHandle = this->compilePipeline(
+      instance->m_stateVector, instance->m_renderPass,
+      newPipelineBase);
+    
+    if (!instance->setPipeline(newPipelineHandle)) {
+      // If another thread finished compiling an optimized version of this
+      // pipeline before this one finished, discard the new pipeline object.
+      m_vkd->vkDestroyPipeline(m_vkd->device(), newPipelineHandle, nullptr);
+    } else if (newPipelineBase == VK_NULL_HANDLE && newPipelineHandle != VK_NULL_HANDLE) {
+      // Use the new pipeline as the base pipeline for derivative pipelines.
+      m_basePipeline.compare_exchange_strong(newPipelineBase, newPipelineHandle);
     }
   }
   
   
-  bool DxvkGraphicsPipeline::findPipeline(
+  DxvkGraphicsPipelineInstance* DxvkGraphicsPipeline::findInstance(
     const DxvkGraphicsPipelineStateInfo& state,
-          VkRenderPass                   renderPass,
-          VkPipeline&                    pipeline) const {
-    for (const PipelineStruct& pair : m_pipelines) {
-      if (pair.stateVector == state
-       && pair.renderPass  == renderPass) {
-        pipeline = pair.pipeline;
-        return true;
-      }
+          VkRenderPass                   renderPass) const {
+    for (const auto& pipeline : m_pipelines) {
+      if (pipeline->isCompatible(state, renderPass))
+        return pipeline.ptr();
     }
     
-    return false;
+    return nullptr;
   }
   
   
@@ -140,26 +202,25 @@ namespace dxvk {
       this->logPipelineState(LogLevel::Debug, state);
     }
     
-    std::array<VkDynamicState, 4> dynamicStates = {
+    std::array<VkDynamicState, 5> dynamicStates = {
       VK_DYNAMIC_STATE_VIEWPORT,
       VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_DEPTH_BIAS,
       VK_DYNAMIC_STATE_BLEND_CONSTANTS,
       VK_DYNAMIC_STATE_STENCIL_REFERENCE,
     };
     
-    std::array<VkBool32,                 MaxNumActiveBindings> specData;
-    std::array<VkSpecializationMapEntry, MaxNumActiveBindings> specMap;
+    DxvkSpecConstantData specData;
+    specData.rasterizerSampleCount = uint32_t(state.msSampleCount);
     
-    for (uint32_t i = 0; i < MaxNumActiveBindings; i++) {
-      specData[i] = state.bsBindingState.isBound(i) ? VK_TRUE : VK_FALSE;
-      specMap [i] = { i, static_cast<uint32_t>(sizeof(VkBool32)) * i, sizeof(VkBool32) };
-    }
+    for (uint32_t i = 0; i < MaxNumActiveBindings; i++)
+      specData.activeBindings[i] = state.bsBindingState.isBound(i) ? VK_TRUE : VK_FALSE;
     
     VkSpecializationInfo specInfo;
-    specInfo.mapEntryCount        = specMap.size();
-    specInfo.pMapEntries          = specMap.data();
-    specInfo.dataSize             = specData.size() * sizeof(VkBool32);
-    specInfo.pData                = specData.data();
+    specInfo.mapEntryCount        = g_specConstantMap.mapEntryCount();
+    specInfo.pMapEntries          = g_specConstantMap.mapEntryData();
+    specInfo.dataSize             = sizeof(specData);
+    specInfo.pData                = &specData;
     
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     
@@ -168,7 +229,23 @@ namespace dxvk {
     if (m_tes != nullptr) stages.push_back(m_tes->stageInfo(&specInfo));
     if (m_gs  != nullptr) stages.push_back(m_gs->stageInfo(&specInfo));
     if (m_fs  != nullptr) stages.push_back(m_fs->stageInfo(&specInfo));
-    
+
+    // Fix up color write masks using the component mappings
+    std::array<VkPipelineColorBlendAttachmentState, MaxNumRenderTargets> omBlendAttachments;
+
+    for (uint32_t i = 0; i < MaxNumRenderTargets; i++) {
+      omBlendAttachments[i] = state.omBlendAttachments[i];
+      omBlendAttachments[i].colorWriteMask = util::remapComponentMask(
+        state.omBlendAttachments[i].colorWriteMask,
+        state.omComponentMapping[i]);
+      
+      specData.outputMappings[4 * i + 0] = util::getComponentIndex(state.omComponentMapping[i].r, 0);
+      specData.outputMappings[4 * i + 1] = util::getComponentIndex(state.omComponentMapping[i].g, 1);
+      specData.outputMappings[4 * i + 2] = util::getComponentIndex(state.omComponentMapping[i].b, 2);
+      specData.outputMappings[4 * i + 3] = util::getComponentIndex(state.omComponentMapping[i].a, 3);
+    }
+
+    // Generate per-instance attribute divisors
     std::array<VkVertexInputBindingDivisorDescriptionEXT, MaxNumVertexBindings> viDivisorDesc;
     uint32_t                                                                    viDivisorCount = 0;
     
@@ -199,8 +276,8 @@ namespace dxvk {
     if (viDivisorCount == 0)
       viInfo.pNext = viDivisorInfo.pNext;
     
-    // TODO make this extension required when widely supported
-    if (!m_device->extensions().extVertexAttributeDivisor.enabled())
+    // TODO remove this once the extension is widely supported
+    if (!m_device->extensions().extVertexAttributeDivisor)
       viInfo.pNext = viDivisorInfo.pNext;
     
     VkPipelineInputAssemblyStateCreateInfo iaInfo;
@@ -229,15 +306,15 @@ namespace dxvk {
     rsInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rsInfo.pNext                  = nullptr;
     rsInfo.flags                  = 0;
-    rsInfo.depthClampEnable       = state.rsEnableDepthClamp;
-    rsInfo.rasterizerDiscardEnable= state.rsEnableDiscard;
+    rsInfo.depthClampEnable       = state.rsDepthClampEnable;
+    rsInfo.rasterizerDiscardEnable= VK_FALSE;
     rsInfo.polygonMode            = state.rsPolygonMode;
     rsInfo.cullMode               = state.rsCullMode;
     rsInfo.frontFace              = state.rsFrontFace;
     rsInfo.depthBiasEnable        = state.rsDepthBiasEnable;
-    rsInfo.depthBiasConstantFactor= state.rsDepthBiasConstant;
-    rsInfo.depthBiasClamp         = state.rsDepthBiasClamp;
-    rsInfo.depthBiasSlopeFactor   = state.rsDepthBiasSlope;
+    rsInfo.depthBiasConstantFactor= 0.0f;
+    rsInfo.depthBiasClamp         = 0.0f;
+    rsInfo.depthBiasSlopeFactor   = 0.0f;
     rsInfo.lineWidth              = 1.0f;
     
     VkPipelineMultisampleStateCreateInfo msInfo;
@@ -258,12 +335,12 @@ namespace dxvk {
     dsInfo.depthTestEnable        = state.dsEnableDepthTest;
     dsInfo.depthWriteEnable       = state.dsEnableDepthWrite;
     dsInfo.depthCompareOp         = state.dsDepthCompareOp;
-    dsInfo.depthBoundsTestEnable  = state.dsEnableDepthBounds;
+    dsInfo.depthBoundsTestEnable  = VK_FALSE;
     dsInfo.stencilTestEnable      = state.dsEnableStencilTest;
     dsInfo.front                  = state.dsStencilOpFront;
     dsInfo.back                   = state.dsStencilOpBack;
-    dsInfo.minDepthBounds         = state.dsDepthBoundsMin;
-    dsInfo.maxDepthBounds         = state.dsDepthBoundsMax;
+    dsInfo.minDepthBounds         = 0.0f;
+    dsInfo.maxDepthBounds         = 1.0f;
     
     VkPipelineColorBlendStateCreateInfo cbInfo;
     cbInfo.sType                  = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -272,7 +349,7 @@ namespace dxvk {
     cbInfo.logicOpEnable          = state.omEnableLogicOp;
     cbInfo.logicOp                = state.omLogicOp;
     cbInfo.attachmentCount        = DxvkLimits::MaxNumRenderTargets;
-    cbInfo.pAttachments           = state.omBlendAttachments;
+    cbInfo.pAttachments           = omBlendAttachments.data();
     
     for (uint32_t i = 0; i < 4; i++)
       cbInfo.blendConstants[i] = 0.0f;
@@ -287,9 +364,7 @@ namespace dxvk {
     VkGraphicsPipelineCreateInfo info;
     info.sType                    = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     info.pNext                    = nullptr;
-    info.flags                    = baseHandle == VK_NULL_HANDLE
-      ? VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT
-      : VK_PIPELINE_CREATE_DERIVATIVE_BIT;
+    info.flags                    = 0;
     info.stageCount               = stages.size();
     info.pStages                  = stages.data();
     info.pVertexInputState        = &viInfo;
@@ -306,6 +381,10 @@ namespace dxvk {
     info.subpass                  = 0;
     info.basePipelineHandle       = baseHandle;
     info.basePipelineIndex        = -1;
+    
+    info.flags |= baseHandle == VK_NULL_HANDLE
+      ? VK_PIPELINE_CREATE_ALLOW_DERIVATIVES_BIT
+      : VK_PIPELINE_CREATE_DERIVATIVE_BIT;
     
     if (tsInfo.patchControlPoints == 0)
       info.pTessellationState = nullptr;
@@ -328,12 +407,6 @@ namespace dxvk {
   }
   
   
-  void DxvkGraphicsPipeline::destroyPipelines() {
-    for (const PipelineStruct& pair : m_pipelines)
-      m_vkd->vkDestroyPipeline(m_vkd->device(), pair.pipeline, nullptr);
-  }
-  
-  
   bool DxvkGraphicsPipeline::validatePipelineState(
     const DxvkGraphicsPipelineStateInfo& state) const {
     // Validate vertex input - each input slot consumed by the
@@ -343,17 +416,13 @@ namespace dxvk {
     for (uint32_t i = 0; i < state.ilAttributeCount; i++)
       providedVertexInputs |= 1u << state.ilAttributes[i].location;
     
-    if ((providedVertexInputs & m_vsIn) != m_vsIn) {
-      Logger::err("DxvkGraphicsPipeline: Input layout mismatches vertex shader input");
+    if ((providedVertexInputs & m_vsIn) != m_vsIn)
       return false;
-    }
     
     // If there are no tessellation shaders, we
     // obviously cannot use tessellation patches.
-    if ((state.iaPatchVertexCount != 0) && (m_tcs == nullptr || m_tes == nullptr)) {
-      Logger::err("DxvkGraphicsPipeline: Cannot use tessellation patches without tessellation shaders");
+    if ((state.iaPatchVertexCount != 0) && (m_tcs == nullptr || m_tes == nullptr))
       return false;
-    }
     
     // No errors
     return true;

@@ -2,7 +2,8 @@
 
 #include "dxgi_include.h"
 
-#include "../dxvk/dxvk_include.h"
+#include "../dxvk/dxvk_adapter.h"
+#include "../dxvk/dxvk_format.h"
 
 namespace dxvk {
   
@@ -12,12 +13,12 @@ namespace dxvk {
    * Maps a DXGI format to a set of Vulkan formats.
    */
   struct DXGI_VK_FORMAT_MAPPING {
-    VkFormat              FormatColor = VK_FORMAT_UNDEFINED;  ///< Corresponding color format
-    VkFormat              FormatDepth = VK_FORMAT_UNDEFINED;  ///< Corresponding depth format
-    VkFormat              FormatRaw   = VK_FORMAT_UNDEFINED;  ///< Bit-compatible integer format
-    VkImageAspectFlags    AspectColor = 0;                    ///< Defined aspects for the color format
-    VkImageAspectFlags    AspectDepth = 0;                    ///< Defined aspects for the depth format
-    VkComponentMapping    Swizzle     = {                     ///< Color component swizzle
+    VkFormat              FormatColor   = VK_FORMAT_UNDEFINED;  ///< Corresponding color format
+    VkFormat              FormatDepth   = VK_FORMAT_UNDEFINED;  ///< Corresponding depth format
+    VkFormat              FormatRaw     = VK_FORMAT_UNDEFINED;  ///< Bit-compatible integer format
+    VkImageAspectFlags    AspectColor   = 0;                    ///< Defined aspects for the color format
+    VkImageAspectFlags    AspectDepth   = 0;                    ///< Defined aspects for the depth format
+    VkComponentMapping    Swizzle       = {                     ///< Color component swizzle
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
       VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
   };
@@ -53,15 +54,94 @@ namespace dxvk {
     DXGI_VK_FORMAT_MODE_RAW   = 3,  ///< Unsigned integer format
   };
   
+  
   /**
-   * \brief Retrieves info for a given DXGI format
+   * \brief Format family
    * 
-   * \param [in] Format The DXGI format to look up
-   * \param [in] Mode the format lookup mode
-   * \returns Format info
+   * Stores a set of compatible formats. This can
+   * be used to aggregate formats for the image
+   * format list extension.
    */
-  DXGI_VK_FORMAT_INFO GetDXGIFormatInfo(
-          DXGI_FORMAT         Format,
-          DXGI_VK_FORMAT_MODE Mode);
+  struct DXGI_VK_FORMAT_FAMILY {
+    constexpr static size_t MaxSize = 8;
+
+    DXGI_VK_FORMAT_FAMILY() { }
+    DXGI_VK_FORMAT_FAMILY(const std::initializer_list<VkFormat>& FormatList) {
+      for (VkFormat f : FormatList)
+        Add(f);
+    }
+
+    BOOL Add(VkFormat Format) {
+      for (UINT i = 0; i < FormatCount; i++) {
+        if (Formats[i] == Format)
+          return TRUE;
+      }
+
+      if (FormatCount < MaxSize) {
+        Formats[FormatCount++] = Format;
+        return TRUE;
+      } return FALSE;
+    }
+
+    UINT     FormatCount = 0;
+    VkFormat Formats[MaxSize];
+  };
+  
+  
+  /**
+   * \brief Format table
+   * 
+   * Initializes a format table for a specific
+   * device and provides methods to look up
+   * formats.
+   */
+  class DXGIVkFormatTable {
+    
+  public:
+    
+    DXGIVkFormatTable(
+      const Rc<DxvkAdapter>& adapter);
+    ~DXGIVkFormatTable();
+    
+    /**
+     * \brief Retrieves info for a given DXGI format
+     * 
+     * \param [in] Format The DXGI format to look up
+     * \param [in] Mode the format lookup mode
+     * \returns Format info
+     */
+    DXGI_VK_FORMAT_INFO GetFormatInfo(
+            DXGI_FORMAT         Format,
+            DXGI_VK_FORMAT_MODE Mode) const;
+    
+    /**
+     * \brief Retrieves a format family
+     * 
+     * \param [in] Format The format to query
+     * \param [in] Mode Image format mode
+     * \returns Image format family
+     */
+    DXGI_VK_FORMAT_FAMILY GetFormatFamily(
+            DXGI_FORMAT         Format,
+            DXGI_VK_FORMAT_MODE Mode) const;
+    
+  private:
+    
+    std::array<DXGI_VK_FORMAT_MAPPING, 133> m_dxgiFormats;
+    std::array<DXGI_VK_FORMAT_FAMILY,  133> m_dxgiFamilies;
+    
+    const DXGI_VK_FORMAT_MAPPING* GetFormatMapping(
+            DXGI_FORMAT           Format) const;
+
+    bool CheckImageFormatSupport(
+      const Rc<DxvkAdapter>&      Adapter,
+            VkFormat              Format,
+            VkFormatFeatureFlags  Features) const;
+    
+    void RemapDepthFormat(
+            DXGI_FORMAT           Format,
+            VkFormat              Target);
+        
+  };
   
 };

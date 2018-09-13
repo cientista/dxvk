@@ -13,7 +13,7 @@ namespace dxvk {
   class DxvkImage;
 }
 
-class IDXGIVkInteropDevice;
+struct IDXGIVkInteropDevice;
 
 /**
  * \brief Private DXGI device interface
@@ -40,7 +40,7 @@ IDXGIVkDevice : public IDXGIDevice2 {
  * this interface.
  */
 MIDL_INTERFACE("907bf281-ea3c-43b4-a8e4-9f231107b4ff")
-IDXGIVkAdapter : public IDXGIAdapter1 {
+IDXGIVkAdapter : public IDXGIAdapter2 {
   static const GUID guid;
   
   virtual dxvk::Rc<dxvk::DxvkAdapter> STDMETHODCALLTYPE GetDXVKAdapter() = 0;
@@ -55,7 +55,7 @@ IDXGIVkAdapter : public IDXGIAdapter1 {
    */
   virtual HRESULT STDMETHODCALLTYPE CreateDevice(
           IDXGIObject*              pContainer,
-    const VkPhysicalDeviceFeatures* pFeatures,
+    const dxvk::DxvkDeviceFeatures* pFeatures,
           IDXGIVkDevice**           ppDevice) = 0;
   
   /**
@@ -67,11 +67,22 @@ IDXGIVkAdapter : public IDXGIAdapter1 {
    * formats, this is not guaranteed.
    * \param [in] format The DXGI format
    * \param [in] mode Format lookup mode
-   * \returns Vulkan format pair
+   * \returns Vulkan format mapping
    */
   virtual dxvk::DXGI_VK_FORMAT_INFO STDMETHODCALLTYPE LookupFormat(
-          DXGI_FORMAT               format,
-          dxvk::DXGI_VK_FORMAT_MODE mode) = 0;
+          DXGI_FORMAT               Format,
+          dxvk::DXGI_VK_FORMAT_MODE Mode) = 0;
+  
+  /**
+   * \brief Queries the compatibility family of a given format
+   * 
+   * \param [in] Format The DXGI format
+   * \param [in] Mode Format lookup mode
+   * \returns Format family
+   */
+  virtual dxvk::DXGI_VK_FORMAT_FAMILY STDMETHODCALLTYPE LookupFormatFamily(
+          DXGI_FORMAT               Format,
+          dxvk::DXGI_VK_FORMAT_MODE Mode) = 0;
 };
 
 
@@ -109,7 +120,7 @@ IDXGIVkPresenter : public IUnknown {
    * \returns \c S_OK on success
    */
   virtual HRESULT STDMETHODCALLTYPE CreateSwapChainBackBuffer(
-    const DXGI_SWAP_CHAIN_DESC*       pSwapChainDesc,
+    const DXGI_SWAP_CHAIN_DESC1*      pSwapChainDesc,
           IDXGIVkBackBuffer**         ppBackBuffer) = 0;
   
   /**

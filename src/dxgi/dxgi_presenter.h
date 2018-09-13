@@ -8,7 +8,7 @@
 
 #include "../spirv/spirv_module.h"
 
-#include "dxgi_include.h"
+#include "dxgi_options.h"
 
 namespace dxvk {
   
@@ -69,6 +69,7 @@ namespace dxvk {
   public:
     
     DxgiVkPresenter(
+      const DxgiOptions*            pOptions,
       const Rc<DxvkDevice>&         device,
             HWND                    window);
     
@@ -82,8 +83,9 @@ namespace dxvk {
     
     /**
      * \brief Renders back buffer to the screen
+     * \param [in] SyncInterval Vsync interval
      */
-    void PresentImage();
+    void PresentImage(UINT SyncInterval, const Rc<DxvkEvent>& SyncEvent);
     
     /**
      * \brief Sets new back buffer
@@ -100,28 +102,16 @@ namespace dxvk {
      * Only actually recreates the swap chain object
      * if any of the properties have changed. If no
      * properties have changed, this is a no-op.
-     * \param [in] options New swap chain options
+     * \param [in] Format New surface format
+     * \param [in] Vsync Enable vertical sync
+     * \param [in] WindowSize Window size
+     * \param [in] BufferCount Swap image count
      */
     void RecreateSwapchain(
-      const DxvkSwapchainProperties* pOptions);
-    
-    /**
-     * \brief Picks a surface format based on a DXGI format
-     * 
-     * This will return a supported format that, if possible,
-     * has properties similar to those of the DXGI format.
-     * \param [in] fmt The DXGI format
-     * \returns The Vulkan format
-     */
-    VkSurfaceFormatKHR PickSurfaceFormat(DXGI_FORMAT Fmt) const;
-    
-    /**
-     * \brief Picks a supported present mode
-     * 
-     * \param [in] preferred Preferred present mode
-     * \returns An actually supported present mode
-     */
-    VkPresentModeKHR PickPresentMode(VkPresentModeKHR Preferred) const;
+            DXGI_FORMAT       Format,
+            BOOL              Vsync,
+            VkExtent2D        WindowSize,
+            UINT              BufferCount);
     
     /**
      * \brief Sets gamma curve
@@ -142,11 +132,16 @@ namespace dxvk {
       GammaTex  = 3,
     };
     
+    HWND                    m_window;
+    
     Rc<DxvkDevice>          m_device;
     Rc<DxvkContext>         m_context;
     
     Rc<DxvkSurface>         m_surface;
     Rc<DxvkSwapchain>       m_swapchain;
+
+    Rc<DxvkShader>          m_vertShader;
+    Rc<DxvkShader>          m_fragShader;
     
     Rc<DxvkSampler>         m_samplerFitting;
     Rc<DxvkSampler>         m_samplerScaling;
@@ -160,9 +155,20 @@ namespace dxvk {
     Rc<DxvkImageView>       m_gammaTextureView;
     
     Rc<hud::Hud>            m_hud;
-    
+
+    DxvkInputAssemblyState  m_iaState;
+    DxvkRasterizerState     m_rsState;
+    DxvkMultisampleState    m_msState;
+    DxvkDepthStencilState   m_dsState;
+    DxvkLogicOpState        m_loState;
     DxvkBlendMode           m_blendMode;
     DxvkSwapchainProperties m_options;
+    
+    VkSurfaceFormatKHR PickSurfaceFormat(DXGI_FORMAT Fmt) const;
+    
+    VkPresentModeKHR PickPresentMode(BOOL Vsync) const;
+    
+    Rc<DxvkSurface> CreateSurface();
     
     Rc<DxvkSampler> CreateSampler(
             VkFilter              Filter,

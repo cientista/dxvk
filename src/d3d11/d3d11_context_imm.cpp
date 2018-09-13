@@ -3,6 +3,9 @@
 #include "d3d11_device.h"
 #include "d3d11_texture.h"
 
+constexpr static uint32_t MinFlushIntervalUs = 1250;
+constexpr static uint32_t MaxPendingSubmits  = 3;
+
 namespace dxvk {
   
   D3D11ImmediateContext::D3D11ImmediateContext(
@@ -45,6 +48,47 @@ namespace dxvk {
   }
   
   
+  HRESULT STDMETHODCALLTYPE D3D11ImmediateContext::GetData(
+          ID3D11Asynchronous*               pAsync,
+          void*                             pData,
+          UINT                              DataSize,
+          UINT                              GetDataFlags) {
+    // Make sure that we can safely write to the memory
+    // location pointed to by pData if it is specified.
+    if (DataSize == 0)
+      pData = nullptr;
+    
+    if (pData != nullptr && pAsync->GetDataSize() != DataSize) {
+      Logger::err(str::format(
+        "D3D11: GetData: Data size mismatch",
+        "\n  Expected: ", pAsync->GetDataSize(),
+        "\n  Got:      ", DataSize));
+      return E_INVALIDARG;
+    }
+    
+    // Default error return for unsupported interfaces
+    HRESULT hr = E_INVALIDARG;
+
+    // This method can handle various incompatible interfaces,
+    // so we have to find out what we are actually dealing with
+    Com<ID3D11Query> query;
+    
+    if (SUCCEEDED(pAsync->QueryInterface(__uuidof(ID3D11Query), reinterpret_cast<void**>(&query))))
+      hr = static_cast<D3D11Query*>(query.ptr())->GetData(pData, GetDataFlags);
+    
+    // If we're likely going to spin on the asynchronous object,
+    // flush the context so that we're keeping the GPU busy
+    if (hr == S_FALSE)
+      FlushImplicit();
+    
+    // The requested interface is not supported
+    if (FAILED(hr))
+      Logger::err("D3D11: GetData: Unsupported Async type");
+    
+    return hr;
+  }
+  
+  
   void STDMETHODCALLTYPE D3D11ImmediateContext::Flush() {
     m_parent->FlushInitContext();
     
@@ -62,8 +106,8 @@ namespace dxvk {
       
       FlushCsChunk();
       
-      // Reset optimization info
-      m_drawCount = 0;
+      // Reset flush timer used for implicit flushes
+      m_lastFlush = std::chrono::high_resolution_clock::now();
       m_csIsBusy  = false;
     }
   }
@@ -80,8 +124,7 @@ namespace dxvk {
     
     // As an optimization, flush everything if the
     // number of pending draw calls is high enough.
-    if (m_drawCount >= MaxPendingDraws)
-      Flush();
+    FlushImplicit();
     
     // Dispatch command list to the CS thread and
     // restore the immediate context's state
@@ -95,7 +138,6 @@ namespace dxvk {
     // Mark CS thread as busy so that subsequent
     // flush operations get executed correctly.
     m_csIsBusy = true;
-    m_drawCount += commandList->GetDrawCount();
   }
   
   
@@ -151,6 +193,135 @@ namespace dxvk {
   }
   
   
+  void STDMETHODCALLTYPE D3D11ImmediateContext::CopySubresourceRegion(
+          ID3D11Resource*                   pDstResource,
+          UINT                              DstSubresource,
+          UINT                              DstX,
+          UINT                              DstY,
+          UINT                              DstZ,
+          ID3D11Resource*                   pSrcResource,
+          UINT                              SrcSubresource,
+    const D3D11_BOX*                        pSrcBox) {
+    FlushImplicit();
+
+    D3D11DeviceContext::CopySubresourceRegion(
+      pDstResource, DstSubresource, DstX, DstY, DstZ,
+      pSrcResource, SrcSubresource, pSrcBox);
+  }
+  
+
+  void STDMETHODCALLTYPE D3D11ImmediateContext::CopySubresourceRegion1(
+          ID3D11Resource*                   pDstResource,
+          UINT                              DstSubresource,
+          UINT                              DstX,
+          UINT                              DstY,
+          UINT                              DstZ,
+          ID3D11Resource*                   pSrcResource,
+          UINT                              SrcSubresource,
+    const D3D11_BOX*                        pSrcBox,
+          UINT                              CopyFlags) {
+    FlushImplicit();
+
+    D3D11DeviceContext::CopySubresourceRegion1(
+      pDstResource, DstSubresource, DstX, DstY, DstZ,
+      pSrcResource, SrcSubresource, pSrcBox, CopyFlags);
+  }
+
+  
+  void STDMETHODCALLTYPE D3D11ImmediateContext::CopyResource(
+          ID3D11Resource*                   pDstResource,
+          ID3D11Resource*                   pSrcResource) {
+    FlushImplicit();
+
+    D3D11DeviceContext::CopyResource(
+      pDstResource, pSrcResource);
+  }
+
+  
+  void STDMETHODCALLTYPE D3D11ImmediateContext::GenerateMips(
+          ID3D11ShaderResourceView*         pShaderResourceView) {
+    FlushImplicit();
+
+    D3D11DeviceContext::GenerateMips(
+      pShaderResourceView);
+  }
+  
+
+  void STDMETHODCALLTYPE D3D11ImmediateContext::UpdateSubresource(
+          ID3D11Resource*                   pDstResource,
+          UINT                              DstSubresource,
+    const D3D11_BOX*                        pDstBox,
+    const void*                             pSrcData,
+          UINT                              SrcRowPitch,
+          UINT                              SrcDepthPitch) {
+    FlushImplicit();
+
+    D3D11DeviceContext::UpdateSubresource(
+      pDstResource, DstSubresource, pDstBox,
+      pSrcData, SrcRowPitch, SrcDepthPitch);
+  }
+
+  
+  void STDMETHODCALLTYPE D3D11ImmediateContext::UpdateSubresource1(
+          ID3D11Resource*                   pDstResource,
+          UINT                              DstSubresource,
+    const D3D11_BOX*                        pDstBox,
+    const void*                             pSrcData,
+          UINT                              SrcRowPitch,
+          UINT                              SrcDepthPitch,
+          UINT                              CopyFlags) {
+    FlushImplicit();
+
+    D3D11DeviceContext::UpdateSubresource1(
+      pDstResource, DstSubresource, pDstBox,
+      pSrcData, SrcRowPitch, SrcDepthPitch,
+      CopyFlags);
+  }
+  
+
+  void STDMETHODCALLTYPE D3D11ImmediateContext::ResolveSubresource(
+          ID3D11Resource*                   pDstResource,
+          UINT                              DstSubresource,
+          ID3D11Resource*                   pSrcResource,
+          UINT                              SrcSubresource,
+          DXGI_FORMAT                       Format) {
+    FlushImplicit();
+
+    D3D11DeviceContext::ResolveSubresource(
+      pDstResource, DstSubresource,
+      pSrcResource, SrcSubresource,
+      Format);
+  }
+
+
+  void STDMETHODCALLTYPE D3D11ImmediateContext::OMSetRenderTargets(
+          UINT                              NumViews,
+          ID3D11RenderTargetView* const*    ppRenderTargetViews,
+          ID3D11DepthStencilView*           pDepthStencilView) {
+    FlushImplicit();
+    
+    D3D11DeviceContext::OMSetRenderTargets(
+      NumViews, ppRenderTargetViews, pDepthStencilView);
+  }
+  
+  
+  void STDMETHODCALLTYPE D3D11ImmediateContext::OMSetRenderTargetsAndUnorderedAccessViews(
+          UINT                              NumRTVs,
+          ID3D11RenderTargetView* const*    ppRenderTargetViews,
+          ID3D11DepthStencilView*           pDepthStencilView,
+          UINT                              UAVStartSlot,
+          UINT                              NumUAVs,
+          ID3D11UnorderedAccessView* const* ppUnorderedAccessViews,
+    const UINT*                             pUAVInitialCounts) {
+    FlushImplicit();
+
+    D3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews(
+      NumRTVs, ppRenderTargetViews, pDepthStencilView,
+      UAVStartSlot, NumUAVs, ppUnorderedAccessViews,
+      pUAVInitialCounts);
+  }
+  
+  
   HRESULT D3D11ImmediateContext::MapBuffer(
           D3D11Buffer*                pResource,
           D3D11_MAP                   MapType,
@@ -168,7 +339,7 @@ namespace dxvk {
       // it as the 'new' mapped slice. This assumes that the
       // only way to invalidate a buffer is by mapping it.
       auto physicalSlice = buffer->allocPhysicalSlice();
-      pResource->GetBufferInfo()->mappedSlice = physicalSlice;
+      pResource->SetMappedSlice(physicalSlice);
       
       EmitCs([
         cBuffer        = buffer,
@@ -184,29 +355,12 @@ namespace dxvk {
     // Use map pointer from previous map operation. This
     // way we don't have to synchronize with the CS thread
     // if the map mode is D3D11_MAP_WRITE_NO_OVERWRITE.
-    const DxvkPhysicalBufferSlice physicalSlice
-      = pResource->GetBufferInfo()->mappedSlice;
+    const DxvkPhysicalBufferSlice physicalSlice = pResource->GetMappedSlice();
     
     pMappedResource->pData      = physicalSlice.mapPtr(0);
     pMappedResource->RowPitch   = physicalSlice.length();
     pMappedResource->DepthPitch = physicalSlice.length();
     return S_OK;
-  }
-  
-  
-  void STDMETHODCALLTYPE D3D11ImmediateContext::OMSetRenderTargets(
-          UINT                              NumViews,
-          ID3D11RenderTargetView* const*    ppRenderTargetViews,
-          ID3D11DepthStencilView*           pDepthStencilView) {
-    // Optimization: If the number of draw and dispatch calls issued
-    // prior to the previous context flush is above a certain threshold,
-    // submit the current command buffer in order to keep the GPU busy.
-    // This also helps keep the command buffers at a reasonable size.
-    if (m_drawCount >= MaxPendingDraws)
-      Flush();
-    
-    D3D11DeviceContext::OMSetRenderTargets(
-      NumViews, ppRenderTargetViews, pDepthStencilView);
   }
   
   
@@ -360,31 +514,52 @@ namespace dxvk {
           UINT                              MapFlags) {
     // Some games (e.g. The Witcher 3) do not work correctly
     // when a map fails with D3D11_MAP_FLAG_DO_NOT_WAIT set
-    if (!m_parent->TestOption(D3D11Option::AllowMapFlagNoWait))
+    if (!m_parent->GetOptions()->allowMapFlagNoWait)
       MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;
     
     // Wait for the any pending D3D11 command to be executed
     // on the CS thread so that we can determine whether the
     // resource is currently in use or not.
-    Flush();
     SynchronizeCsThread();
     
     if (Resource->isInUse()) {
-      if (MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT)
+      if (MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) {
+        // We don't have to wait, but misbehaving games may
+        // still try to spin on `Map` until the resource is
+        // idle, so we should flush pending commands
+        FlushImplicit();
         return false;
-      
-      // TODO implement properly in DxvkDevice
-      while (Resource->isInUse())
-        std::this_thread::yield();
+      } else {
+        // Make sure pending commands using the resource get
+        // executed on the the GPU if we have to wait for it
+        Flush();
+        SynchronizeCsThread();
+        
+        while (Resource->isInUse())
+          dxvk::this_thread::yield();
+      }
     }
     
     return true;
   }
   
   
-  void D3D11ImmediateContext::EmitCsChunk(Rc<DxvkCsChunk>&& chunk) {
+  void D3D11ImmediateContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
     m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;
+  }
+
+
+  void D3D11ImmediateContext::FlushImplicit() {
+    // Flush only if the GPU is about to go idle, in
+    // order to keep the number of submissions low.
+    if (m_device->pendingSubmissions() <= MaxPendingSubmits) {
+      auto now = std::chrono::high_resolution_clock::now();
+
+      // Prevent flushing too often in short intervals.
+      if (now - m_lastFlush >= std::chrono::microseconds(MinFlushIntervalUs))
+        Flush();
+    }
   }
   
 }

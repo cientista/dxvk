@@ -2,6 +2,8 @@
 
 #include "../dxvk/dxvk_device.h"
 
+#include "../d3d10/d3d10_view_dsv.h"
+
 #include "d3d11_device_child.h"
 
 namespace dxvk {
@@ -20,10 +22,9 @@ namespace dxvk {
   public:
     
     D3D11DepthStencilView(
-            D3D11Device*                      device,
-            ID3D11Resource*                   resource,
-      const D3D11_DEPTH_STENCIL_VIEW_DESC&    desc,
-      const Rc<DxvkImageView>&                view);
+            D3D11Device*                      pDevice,
+            ID3D11Resource*                   pResource,
+      const D3D11_DEPTH_STENCIL_VIEW_DESC*    pDesc);
     
     ~D3D11DepthStencilView();
     
@@ -46,16 +47,24 @@ namespace dxvk {
     }
     
     VkImageLayout GetRenderLayout() const {
-      switch (m_desc.Flags & (D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL)) {
-        default:  // case 0
-          return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        case D3D11_DSV_READ_ONLY_DEPTH:
-          return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR;
-        case D3D11_DSV_READ_ONLY_STENCIL:
-          return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL_KHR;
-        case D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL:
-          return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+      if (m_view->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL) {
+        switch (m_desc.Flags & (D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL)) {
+          default:  // case 0
+            return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+          case D3D11_DSV_READ_ONLY_DEPTH:
+            return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL_KHR;
+          case D3D11_DSV_READ_ONLY_STENCIL:
+            return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL_KHR;
+          case D3D11_DSV_READ_ONLY_DEPTH | D3D11_DSV_READ_ONLY_STENCIL:
+            return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        }
+      } else {
+        return VK_IMAGE_LAYOUT_GENERAL;
       }
+    }
+
+    D3D10DepthStencilView* GetD3D10Iface() {
+      return &m_d3d10;
     }
     
     static HRESULT GetDescFromResource(
@@ -69,9 +78,10 @@ namespace dxvk {
   private:
     
     Com<D3D11Device>                  m_device;
-    Com<ID3D11Resource>               m_resource;
+    ID3D11Resource*                   m_resource;
     D3D11_DEPTH_STENCIL_VIEW_DESC     m_desc;
     Rc<DxvkImageView>                 m_view;
+    D3D10DepthStencilView             m_d3d10;
     
   };
   

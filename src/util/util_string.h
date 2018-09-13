@@ -1,14 +1,22 @@
 #pragma once
 
-#include <locale>
-#include <codecvt>
 #include <string>
 #include <sstream>
 
+#include "./com/com_include.h"
+
 namespace dxvk::str {
   
-  inline void format1(std::stringstream&) { }
+  std::string fromws(const WCHAR *ws);
   
+  inline void format1(std::stringstream&) { }
+
+  template<typename... Tx>
+  void format1(std::stringstream& str, const WCHAR *arg, const Tx&... args) {
+    str << fromws(arg);
+    format1(str, args...);
+  }
+
   template<typename T, typename... Tx>
   void format1(std::stringstream& str, const T& arg, const Tx&... args) {
     str << arg;
@@ -20,10 +28,6 @@ namespace dxvk::str {
     std::stringstream stream;
     format1(stream, args...);
     return stream.str();
-  }
-  
-  inline std::string fromws(const std::wstring& ws) {
-    return std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(ws);
   }
   
 }

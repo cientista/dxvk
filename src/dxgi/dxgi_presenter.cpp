@@ -8,22 +8,24 @@
 namespace dxvk {
   
   DxgiVkPresenter::DxgiVkPresenter(
+    const DxgiOptions*            pOptions,
     const Rc<DxvkDevice>&         device,
           HWND                    window)
-  : m_device  (device),
+  : m_window  (window),
+    m_device  (device),
     m_context (device->createContext()) {
     
-    // Create Vulkan surface for the window
-    HINSTANCE instance = reinterpret_cast<HINSTANCE>(
-      GetWindowLongPtr(window, GWLP_HINSTANCE));
-    
-    m_surface = m_device->adapter()->createSurface(instance, window);
+    // Some games don't work with deferred surface creation,
+    // so we should default to initializing it immediately.
+    if (!pOptions->deferSurfaceCreation)
+      m_surface = CreateSurface();
     
     // Reset options for the swap chain itself. We will
     // create a swap chain object before presentation.
     m_options.preferredSurfaceFormat = { VK_FORMAT_UNDEFINED, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
     m_options.preferredPresentMode   = VK_PRESENT_MODE_FIFO_KHR;
     m_options.preferredBufferSize    = { 0u, 0u };
+    m_options.preferredBufferCount   = 0;
     
     // Samplers for presentation. We'll create one with point sampling that will
     // be used when the back buffer resolution matches the output resolution, and
@@ -40,32 +42,22 @@ namespace dxvk {
     
     // Set up context state. The shader bindings and the
     // constant state objects will never be modified.
-    DxvkInputAssemblyState iaState;
-    iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-    iaState.primitiveRestart  = VK_FALSE;
-    iaState.patchVertexCount  = 0;
-    m_context->setInputAssemblyState(iaState);
+    m_iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    m_iaState.primitiveRestart  = VK_FALSE;
+    m_iaState.patchVertexCount  = 0;
     
-    m_context->setInputLayout(
-      0, nullptr, 0, nullptr);
+    m_rsState.polygonMode        = VK_POLYGON_MODE_FILL;
+    m_rsState.cullMode           = VK_CULL_MODE_BACK_BIT;
+    m_rsState.frontFace          = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    m_rsState.depthClampEnable   = VK_FALSE;
+    m_rsState.depthBiasEnable    = VK_FALSE;
+    m_rsState.depthBiasConstant  = 0.0f;
+    m_rsState.depthBiasClamp     = 0.0f;
+    m_rsState.depthBiasSlope     = 0.0f;
     
-    DxvkRasterizerState rsState;
-    rsState.enableDepthClamp   = VK_FALSE;
-    rsState.enableDiscard      = VK_FALSE;
-    rsState.polygonMode        = VK_POLYGON_MODE_FILL;
-    rsState.cullMode           = VK_CULL_MODE_BACK_BIT;
-    rsState.frontFace          = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rsState.depthBiasEnable    = VK_FALSE;
-    rsState.depthBiasConstant  = 0.0f;
-    rsState.depthBiasClamp     = 0.0f;
-    rsState.depthBiasSlope     = 0.0f;
-    m_context->setRasterizerState(rsState);
-    
-    DxvkMultisampleState msState;
-    msState.sampleMask            = 0xffffffff;
-    msState.enableAlphaToCoverage = VK_FALSE;
-    msState.enableAlphaToOne      = VK_FALSE;
-    m_context->setMultisampleState(msState);
+    m_msState.sampleMask            = 0xffffffff;
+    m_msState.enableAlphaToCoverage = VK_FALSE;
+    m_msState.enableAlphaToOne      = VK_FALSE;
     
     VkStencilOpState stencilOp;
     stencilOp.failOp      = VK_STENCIL_OP_KEEP;
@@ -76,22 +68,15 @@ namespace dxvk {
     stencilOp.writeMask   = 0xFFFFFFFF;
     stencilOp.reference   = 0;
     
-    DxvkDepthStencilState dsState;
-    dsState.enableDepthTest   = VK_FALSE;
-    dsState.enableDepthWrite  = VK_FALSE;
-    dsState.enableDepthBounds = VK_FALSE;
-    dsState.enableStencilTest = VK_FALSE;
-    dsState.depthCompareOp    = VK_COMPARE_OP_ALWAYS;
-    dsState.stencilOpFront    = stencilOp;
-    dsState.stencilOpBack     = stencilOp;
-    dsState.depthBoundsMin    = 0.0f;
-    dsState.depthBoundsMax    = 1.0f;
-    m_context->setDepthStencilState(dsState);
+    m_dsState.enableDepthTest   = VK_FALSE;
+    m_dsState.enableDepthWrite  = VK_FALSE;
+    m_dsState.enableStencilTest = VK_FALSE;
+    m_dsState.depthCompareOp    = VK_COMPARE_OP_ALWAYS;
+    m_dsState.stencilOpFront    = stencilOp;
+    m_dsState.stencilOpBack     = stencilOp;
     
-    DxvkLogicOpState loState;
-    loState.enableLogicOp = VK_FALSE;
-    loState.logicOp       = VK_LOGIC_OP_NO_OP;
-    m_context->setLogicOpState(loState);
+    m_loState.enableLogicOp = VK_FALSE;
+    m_loState.logicOp       = VK_LOGIC_OP_NO_OP;
     
     m_blendMode.enableBlending  = VK_FALSE;
     m_blendMode.colorSrcFactor  = VK_BLEND_FACTOR_ONE;
@@ -104,14 +89,9 @@ namespace dxvk {
                                 | VK_COLOR_COMPONENT_G_BIT
                                 | VK_COLOR_COMPONENT_B_BIT
                                 | VK_COLOR_COMPONENT_A_BIT;
-    
-    m_context->bindShader(
-      VK_SHADER_STAGE_VERTEX_BIT,
-      CreateVertexShader());
-    
-    m_context->bindShader(
-      VK_SHADER_STAGE_FRAGMENT_BIT,
-      CreateFragmentShader());
+
+    m_vertShader = CreateVertexShader();
+    m_fragShader = CreateFragmentShader();
     
     m_hud = hud::Hud::createHud(m_device);
   }
@@ -141,85 +121,102 @@ namespace dxvk {
   }
   
   
-  void DxgiVkPresenter::PresentImage() {
-    if (m_hud != nullptr) {
-      m_hud->render({
-        m_options.preferredBufferSize.width,
-        m_options.preferredBufferSize.height,
-      });
-    }
+  void DxgiVkPresenter::PresentImage(UINT SyncInterval, const Rc<DxvkEvent>& SyncEvent) {
+    if (m_hud != nullptr)
+      m_hud->update();
     
+    // Wait for frame event to be signaled. This is used
+    // to enforce the device's frame latency requirement.
+    SyncEvent->wait();
+    
+    // Check whether the back buffer size is the same
+    // as the window size, in which case we should use
+    // VK_FILTER_NEAREST to avoid blurry output
     const bool fitSize =
         m_backBuffer->info().extent.width  == m_options.preferredBufferSize.width
      && m_backBuffer->info().extent.height == m_options.preferredBufferSize.height;
     
-    m_context->beginRecording(
-      m_device->createCommandList());
-    
-    VkImageSubresourceLayers resolveSubresources;
-    resolveSubresources.aspectMask      = VK_IMAGE_ASPECT_COLOR_BIT;
-    resolveSubresources.mipLevel        = 0;
-    resolveSubresources.baseArrayLayer  = 0;
-    resolveSubresources.layerCount      = 1;
-    
-    if (m_backBufferResolve != nullptr) {
-      m_context->resolveImage(
-        m_backBufferResolve, resolveSubresources,
-        m_backBuffer,        resolveSubresources,
-        VK_FORMAT_UNDEFINED);
-    }
-    
-    auto swapSemas = m_swapchain->getSemaphorePair();
-    auto swapImage = m_swapchain->getImageView(swapSemas.acquireSync);
-    
-    DxvkRenderTargets renderTargets;
-    renderTargets.color[0].view   = swapImage;
-    renderTargets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    m_context->bindRenderTargets(renderTargets);
-    
-    VkViewport viewport;
-    viewport.x        = 0.0f;
-    viewport.y        = 0.0f;
-    viewport.width    = float(swapImage->imageInfo().extent.width);
-    viewport.height   = float(swapImage->imageInfo().extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    
-    VkRect2D scissor;
-    scissor.offset.x      = 0;
-    scissor.offset.y      = 0;
-    scissor.extent.width  = swapImage->imageInfo().extent.width;
-    scissor.extent.height = swapImage->imageInfo().extent.height;
-    
-    m_context->setViewports(1, &viewport, &scissor);
-    
-    m_context->bindResourceSampler(BindingIds::Sampler,
-      fitSize ? m_samplerFitting : m_samplerScaling);
-    
-    m_blendMode.enableBlending = VK_FALSE;
-    m_context->setBlendMode(0, m_blendMode);
-    
-    m_context->bindResourceView(BindingIds::Texture, m_backBufferView, nullptr);
-    m_context->draw(4, 1, 0, 0);
-    
-    m_context->bindResourceSampler(BindingIds::GammaSmp, m_gammaSampler);
-    m_context->bindResourceView   (BindingIds::GammaTex, m_gammaTextureView, nullptr);
-    
-    if (m_hud != nullptr) {
-      m_blendMode.enableBlending = VK_TRUE;
+    for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
+      m_context->beginRecording(
+        m_device->createCommandList());
+      
+      // Resolve back buffer if it is multisampled. We
+      // only have to do it only for the first frame.
+      if (m_backBufferResolve != nullptr && i == 0) {
+        VkImageSubresourceLayers resolveSubresources;
+        resolveSubresources.aspectMask      = VK_IMAGE_ASPECT_COLOR_BIT;
+        resolveSubresources.mipLevel        = 0;
+        resolveSubresources.baseArrayLayer  = 0;
+        resolveSubresources.layerCount      = 1;
+        
+        m_context->resolveImage(
+          m_backBufferResolve, resolveSubresources,
+          m_backBuffer,        resolveSubresources,
+          VK_FORMAT_UNDEFINED);
+      }
+      
+      auto swapSemas = m_swapchain->getSemaphorePair();
+      auto swapImage = m_swapchain->getImageView(swapSemas.acquireSync);
+      
+      m_context->bindShader(VK_SHADER_STAGE_VERTEX_BIT,   m_vertShader);
+      m_context->bindShader(VK_SHADER_STAGE_FRAGMENT_BIT, m_fragShader);
+      
+      DxvkRenderTargets renderTargets;
+      renderTargets.color[0].view   = swapImage;
+      renderTargets.color[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      m_context->bindRenderTargets(renderTargets, false);
+      
+      VkViewport viewport;
+      viewport.x        = 0.0f;
+      viewport.y        = 0.0f;
+      viewport.width    = float(swapImage->imageInfo().extent.width);
+      viewport.height   = float(swapImage->imageInfo().extent.height);
+      viewport.minDepth = 0.0f;
+      viewport.maxDepth = 1.0f;
+      
+      VkRect2D scissor;
+      scissor.offset.x      = 0;
+      scissor.offset.y      = 0;
+      scissor.extent.width  = swapImage->imageInfo().extent.width;
+      scissor.extent.height = swapImage->imageInfo().extent.height;
+      
+      m_context->setViewports(1, &viewport, &scissor);
+      
+      m_context->setRasterizerState(m_rsState);
+      m_context->setMultisampleState(m_msState);
+      m_context->setDepthStencilState(m_dsState);
+      m_context->setLogicOpState(m_loState);
       m_context->setBlendMode(0, m_blendMode);
       
-      m_context->bindResourceView(BindingIds::Texture, m_hud->texture(), nullptr);
+      m_context->setInputAssemblyState(m_iaState);
+      m_context->setInputLayout(0, nullptr, 0, nullptr);
+
+      m_context->bindResourceSampler(BindingIds::Sampler, fitSize ? m_samplerFitting : m_samplerScaling);
+      m_context->bindResourceSampler(BindingIds::GammaSmp, m_gammaSampler);
+
+      m_context->bindResourceView(BindingIds::Texture, m_backBufferView, nullptr);
+      m_context->bindResourceView(BindingIds::GammaTex, m_gammaTextureView, nullptr);
+
       m_context->draw(4, 1, 0, 0);
+      
+      if (m_hud != nullptr)
+        m_hud->render(m_context, m_options.preferredBufferSize);
+      
+      if (i == SyncInterval - 1) {
+        DxvkEventRevision eventRev;
+        eventRev.event    = SyncEvent;
+        eventRev.revision = SyncEvent->reset();
+        m_context->signalEvent(eventRev);
+      }
+      
+      m_device->submitCommandList(
+        m_context->endRecording(),
+        swapSemas.acquireSync,
+        swapSemas.presentSync);
+      
+      m_swapchain->present(
+        swapSemas.presentSync);
     }
-    
-    m_device->submitCommandList(
-      m_context->endRecording(),
-      swapSemas.acquireSync,
-      swapSemas.presentSync);
-    
-    m_swapchain->present(
-      swapSemas.presentSync);
   }
   
   
@@ -242,11 +239,15 @@ namespace dxvk {
       resolveInfo.numLayers     = 1;
       resolveInfo.mipLevels     = 1;
       resolveInfo.usage         = VK_IMAGE_USAGE_SAMPLED_BIT
+                                | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
                                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
       resolveInfo.stages        = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
                                 | VK_PIPELINE_STAGE_TRANSFER_BIT;
       resolveInfo.access        = VK_ACCESS_SHADER_READ_BIT
-                                | VK_ACCESS_TRANSFER_WRITE_BIT;
+                                | VK_ACCESS_TRANSFER_WRITE_BIT
+                                | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+                                | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
       resolveInfo.tiling        = VK_IMAGE_TILING_OPTIMAL;
       resolveInfo.layout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       
@@ -259,6 +260,7 @@ namespace dxvk {
     DxvkImageViewCreateInfo viewInfo;
     viewInfo.type       = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format     = Image->info().format;
+    viewInfo.usage      = VK_IMAGE_USAGE_SAMPLED_BIT;
     viewInfo.aspect     = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.minLevel   = 0;
     viewInfo.numLevels  = 1;
@@ -275,27 +277,53 @@ namespace dxvk {
   }
   
   
-  void DxgiVkPresenter::RecreateSwapchain(const DxvkSwapchainProperties* pOptions) {
+  void DxgiVkPresenter::SetGammaControl(
+    const DXGI_VK_GAMMA_CURVE*          pGammaCurve) {
+    m_context->beginRecording(
+      m_device->createCommandList());
+    
+    m_context->updateImage(m_gammaTexture,
+      VkImageSubresourceLayers { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+      VkOffset3D { 0, 0, 0 },
+      VkExtent3D { DXGI_VK_GAMMA_CP_COUNT, 1, 1 },
+      pGammaCurve, 0, 0);
+    
+    m_device->submitCommandList(
+      m_context->endRecording(),
+      nullptr, nullptr);
+  }
+  
+  
+  void DxgiVkPresenter::RecreateSwapchain(DXGI_FORMAT Format, BOOL Vsync, VkExtent2D WindowSize, UINT BufferCount) {
+    if (m_surface == nullptr)
+      m_surface = CreateSurface();
+    
+    DxvkSwapchainProperties options;
+    options.preferredSurfaceFormat  = PickSurfaceFormat(Format);
+    options.preferredPresentMode    = PickPresentMode(Vsync);
+    options.preferredBufferSize     = WindowSize;
+    options.preferredBufferCount    = BufferCount;
+    
     const bool doRecreate =
-         pOptions->preferredSurfaceFormat.format      != m_options.preferredSurfaceFormat.format
-      || pOptions->preferredSurfaceFormat.colorSpace  != m_options.preferredSurfaceFormat.colorSpace
-      || pOptions->preferredPresentMode               != m_options.preferredPresentMode
-      || pOptions->preferredBufferSize.width          != m_options.preferredBufferSize.width
-      || pOptions->preferredBufferSize.height         != m_options.preferredBufferSize.height;
+         options.preferredSurfaceFormat.format      != m_options.preferredSurfaceFormat.format
+      || options.preferredSurfaceFormat.colorSpace  != m_options.preferredSurfaceFormat.colorSpace
+      || options.preferredPresentMode               != m_options.preferredPresentMode
+      || options.preferredBufferSize.width          != m_options.preferredBufferSize.width
+      || options.preferredBufferSize.height         != m_options.preferredBufferSize.height;
     
     if (doRecreate) {
       Logger::info(str::format(
         "DxgiVkPresenter: Recreating swap chain: ",
-        "\n  Format:       ", pOptions->preferredSurfaceFormat.format,
-        "\n  Present mode: ", pOptions->preferredPresentMode,
-        "\n  Buffer size:  ", pOptions->preferredBufferSize.width, "x", pOptions->preferredBufferSize.height));
+        "\n  Format:       ", options.preferredSurfaceFormat.format,
+        "\n  Present mode: ", options.preferredPresentMode,
+        "\n  Buffer size:  ", options.preferredBufferSize.width, "x", options.preferredBufferSize.height));
       
       if (m_swapchain == nullptr)
-        m_swapchain = m_device->createSwapchain(m_surface, *pOptions);
+        m_swapchain = m_device->createSwapchain(m_surface, options);
       else
-        m_swapchain->changeProperties(*pOptions);
+        m_swapchain->changeProperties(options);
       
-      m_options = *pOptions;
+      m_options = options;
     }
   }
   
@@ -334,25 +362,27 @@ namespace dxvk {
   }
   
   
-  VkPresentModeKHR DxgiVkPresenter::PickPresentMode(VkPresentModeKHR Preferred) const {
-    return m_surface->pickPresentMode(1, &Preferred);
+  VkPresentModeKHR DxgiVkPresenter::PickPresentMode(BOOL Vsync) const {
+    std::array<VkPresentModeKHR, 4> modes;
+    size_t n = 0;
+    
+    if (Vsync) {
+      modes[n++] = VK_PRESENT_MODE_FIFO_KHR;
+    } else {
+      modes[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
+      modes[n++] = VK_PRESENT_MODE_MAILBOX_KHR;
+      modes[n++] = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+    }
+    
+    return m_surface->pickPresentMode(n, modes.data());
   }
   
   
-  void DxgiVkPresenter::SetGammaControl(
-    const DXGI_VK_GAMMA_CURVE*          pGammaCurve) {
-    m_context->beginRecording(
-      m_device->createCommandList());
+  Rc<DxvkSurface> DxgiVkPresenter::CreateSurface() {
+    HINSTANCE instance = reinterpret_cast<HINSTANCE>(
+      GetWindowLongPtr(m_window, GWLP_HINSTANCE));
     
-    m_context->updateImage(m_gammaTexture,
-      VkImageSubresourceLayers { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-      VkOffset3D { 0, 0, 0 },
-      VkExtent3D { DXGI_VK_GAMMA_CP_COUNT, 1, 1 },
-      pGammaCurve, 0, 0);
-    
-    m_device->submitCommandList(
-      m_context->endRecording(),
-      nullptr, nullptr);
+    return m_device->adapter()->createSurface(instance, m_window);
   }
   
   
@@ -404,6 +434,7 @@ namespace dxvk {
     DxvkImageViewCreateInfo info;
     info.type         = VK_IMAGE_VIEW_TYPE_1D;
     info.format       = VK_FORMAT_R16G16B16A16_UNORM;
+    info.usage        = VK_IMAGE_USAGE_SAMPLED_BIT;
     info.aspect       = VK_IMAGE_ASPECT_COLOR_BIT;
     info.minLevel     = 0;
     info.numLevels    = 1;

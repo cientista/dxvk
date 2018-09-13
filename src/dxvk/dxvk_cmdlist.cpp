@@ -4,12 +4,12 @@
 namespace dxvk {
     
   DxvkCommandList::DxvkCommandList(
-    const Rc<vk::DeviceFn>& vkd,
           DxvkDevice*       device,
           uint32_t          queueFamily)
-  : m_vkd         (vkd),
-    m_descAlloc   (vkd),
-    m_stagingAlloc(device) {
+  : m_vkd           (device->vkd()),
+    m_cmdBuffersUsed(0),
+    m_descAlloc     (device->vkd()),
+    m_stagingAlloc  (device) {
     VkFenceCreateInfo fenceInfo;
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fenceInfo.pNext = nullptr;
@@ -34,7 +34,8 @@ namespace dxvk {
     cmdInfo.level             = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmdInfo.commandBufferCount = 1;
     
-    if (m_vkd->vkAllocateCommandBuffers(m_vkd->device(), &cmdInfo, &m_buffer) != VK_SUCCESS)
+    if (m_vkd->vkAllocateCommandBuffers(m_vkd->device(), &cmdInfo, &m_execBuffer) != VK_SUCCESS
+     || m_vkd->vkAllocateCommandBuffers(m_vkd->device(), &cmdInfo, &m_initBuffer) != VK_SUCCESS)
       throw DxvkError("DxvkCommandList: Failed to allocate command buffer");
   }
   
@@ -51,6 +52,14 @@ namespace dxvk {
           VkQueue         queue,
           VkSemaphore     waitSemaphore,
           VkSemaphore     wakeSemaphore) {
+    std::array<VkCommandBuffer, 2> cmdBuffers;
+    uint32_t cmdBufferCount = 0;
+    
+    if (m_cmdBuffersUsed.test(DxvkCmdBufferFlag::InitBuffer))
+      cmdBuffers[cmdBufferCount++] = m_initBuffer;
+    if (m_cmdBuffersUsed.test(DxvkCmdBufferFlag::ExecBuffer))
+      cmdBuffers[cmdBufferCount++] = m_execBuffer;
+    
     const VkPipelineStageFlags waitStageMask
       = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     
@@ -60,8 +69,8 @@ namespace dxvk {
     info.waitSemaphoreCount   = waitSemaphore == VK_NULL_HANDLE ? 0 : 1;
     info.pWaitSemaphores      = &waitSemaphore;
     info.pWaitDstStageMask    = &waitStageMask;
-    info.commandBufferCount   = 1;
-    info.pCommandBuffers      = &m_buffer;
+    info.commandBufferCount   = cmdBufferCount;
+    info.pCommandBuffers      = cmdBuffers.data();
     info.signalSemaphoreCount = wakeSemaphore == VK_NULL_HANDLE ? 0 : 1;
     info.pSignalSemaphores    = &wakeSemaphore;
     
@@ -92,16 +101,22 @@ namespace dxvk {
     if (m_vkd->vkResetCommandPool(m_vkd->device(), m_pool, 0) != VK_SUCCESS)
       Logger::err("DxvkCommandList: Failed to reset command buffer");
     
-    if (m_vkd->vkBeginCommandBuffer(m_buffer, &info) != VK_SUCCESS)
+    if (m_vkd->vkBeginCommandBuffer(m_execBuffer, &info) != VK_SUCCESS
+     || m_vkd->vkBeginCommandBuffer(m_initBuffer, &info) != VK_SUCCESS)
       Logger::err("DxvkCommandList: Failed to begin command buffer");
     
     if (m_vkd->vkResetFences(m_vkd->device(), 1, &m_fence) != VK_SUCCESS)
       Logger::err("DxvkCommandList: Failed to reset fence");
+    
+    // Unconditionally mark the exec buffer as used. There
+    // is virtually no use case where this isn't correct.
+    m_cmdBuffersUsed.set(DxvkCmdBufferFlag::ExecBuffer);
   }
   
   
   void DxvkCommandList::endRecording() {
-    if (m_vkd->vkEndCommandBuffer(m_buffer) != VK_SUCCESS)
+    if (m_vkd->vkEndCommandBuffer(m_execBuffer) != VK_SUCCESS
+     || m_vkd->vkEndCommandBuffer(m_initBuffer) != VK_SUCCESS)
       Logger::err("DxvkCommandList::endRecording: Failed to record command buffer");
   }
   
@@ -132,7 +147,7 @@ namespace dxvk {
     region.dstOffset = dstOffset;
     region.size      = dataSize;
     
-    m_vkd->vkCmdCopyBuffer(m_buffer,
+    m_vkd->vkCmdCopyBuffer(m_execBuffer,
       dataSlice.buffer, dstBuffer, 1, &region);
   }
   
@@ -142,7 +157,7 @@ namespace dxvk {
           VkImageLayout           dstImageLayout,
     const VkBufferImageCopy&      dstImageRegion,
     const DxvkStagingBufferSlice& dataSlice) {
-    m_vkd->vkCmdCopyBufferToImage(m_buffer,
+    m_vkd->vkCmdCopyBufferToImage(m_execBuffer,
       dataSlice.buffer, dstImage, dstImageLayout,
       1, &dstImageRegion);
   }

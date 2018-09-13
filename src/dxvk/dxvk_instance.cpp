@@ -1,11 +1,26 @@
+#include <version.h>
+
 #include "dxvk_instance.h"
+#include "dxvk_openvr.h"
+
+#include <algorithm>
 
 namespace dxvk {
   
-  DxvkInstance::DxvkInstance()
-  : m_vkl(new vk::LibraryFn()),
-    m_vki(new vk::InstanceFn(this->createInstance())) {
-    
+  DxvkInstance::DxvkInstance() {
+    Logger::info(str::format("Game: ", env::getExeName()));
+    Logger::info(str::format("DXVK: ", DXVK_VERSION));
+
+    m_config = Config::getUserConfig();
+    m_config.merge(Config::getAppConfig(env::getExeName()));
+
+    g_vrInstance.initInstanceExtensions();
+
+    m_vkl = new vk::LibraryFn();
+    m_vki = new vk::InstanceFn(this->createInstance());
+
+    m_adapters = this->queryAdapters();
+    g_vrInstance.initDeviceExtensions(this);
   }
   
   
@@ -14,30 +29,37 @@ namespace dxvk {
   }
   
   
-  std::vector<Rc<DxvkAdapter>> DxvkInstance::enumAdapters() {
-    uint32_t numAdapters = 0;
-    if (m_vki->vkEnumeratePhysicalDevices(m_vki->instance(), &numAdapters, nullptr) != VK_SUCCESS)
-      throw DxvkError("DxvkInstance::enumAdapters: Failed to enumerate adapters");
-    
-    std::vector<VkPhysicalDevice> adapters(numAdapters);
-    if (m_vki->vkEnumeratePhysicalDevices(m_vki->instance(), &numAdapters, adapters.data()) != VK_SUCCESS)
-      throw DxvkError("DxvkInstance::enumAdapters: Failed to enumerate adapters");
-    
-    std::vector<Rc<DxvkAdapter>> result;
-    for (uint32_t i = 0; i < numAdapters; i++)
-      result.push_back(new DxvkAdapter(this, adapters[i]));
-    return result;
+  Rc<DxvkAdapter> DxvkInstance::enumAdapters(uint32_t index) const {
+    return index < m_adapters.size()
+      ? m_adapters[index]
+      : nullptr;
   }
   
   
   VkInstance DxvkInstance::createInstance() {
-    auto enabledLayers     = this->getLayers();
-    auto enabledExtensions = this->getExtensions(enabledLayers);
+    DxvkInstanceExtensions insExtensions;
+
+    std::array<DxvkExt*, 3> insExtensionList = {{
+      &insExtensions.khrGetPhysicalDeviceProperties2,
+      &insExtensions.khrSurface,
+      &insExtensions.khrWin32Surface,
+    }};
+
+    DxvkNameSet extensionsEnabled;
+    DxvkNameSet extensionsAvailable = DxvkNameSet::enumInstanceExtensions(m_vkl);
     
-    Logger::info("Enabled instance layers:");
-    this->logNameList(enabledLayers);
+    if (!extensionsAvailable.enableExtensions(
+          insExtensionList.size(),
+          insExtensionList.data(),
+          extensionsEnabled))
+      throw DxvkError("DxvkInstance: Failed to create instance");
+    
+    // Enable additional extensions if necessary
+    extensionsEnabled.merge(g_vrInstance.getInstanceExtensions());
+    DxvkNameList extensionNameList = extensionsEnabled.toNameList();
+    
     Logger::info("Enabled instance extensions:");
-    this->logNameList(enabledExtensions);
+    this->logNameList(extensionNameList);
     
     VkApplicationInfo appInfo;
     appInfo.sType                 = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -53,10 +75,10 @@ namespace dxvk {
     info.pNext                    = nullptr;
     info.flags                    = 0;
     info.pApplicationInfo         = &appInfo;
-    info.enabledLayerCount        = enabledLayers.count();
-    info.ppEnabledLayerNames      = enabledLayers.names();
-    info.enabledExtensionCount    = enabledExtensions.count();
-    info.ppEnabledExtensionNames  = enabledExtensions.names();
+    info.enabledLayerCount        = 0;
+    info.ppEnabledLayerNames      = nullptr;
+    info.enabledExtensionCount    = extensionNameList.count();
+    info.ppEnabledExtensionNames  = extensionNameList.names();
     
     VkInstance result = VK_NULL_HANDLE;
     if (m_vkl->vkCreateInstance(&info, nullptr, &result) != VK_SUCCESS)
@@ -65,54 +87,41 @@ namespace dxvk {
   }
   
   
-  vk::NameList DxvkInstance::getLayers() {
-    std::vector<const char*> layers = { };
+  std::vector<Rc<DxvkAdapter>> DxvkInstance::queryAdapters() {
+    DxvkDeviceFilter filter;
     
-    if (env::getEnvVar(L"DXVK_DEBUG_LAYERS") == "1")
-      layers.push_back("VK_LAYER_LUNARG_standard_validation");
+    uint32_t numAdapters = 0;
+    if (m_vki->vkEnumeratePhysicalDevices(m_vki->instance(), &numAdapters, nullptr) != VK_SUCCESS)
+      throw DxvkError("DxvkInstance::enumAdapters: Failed to enumerate adapters");
     
-    const vk::NameSet layersAvailable
-      = vk::NameSet::enumerateInstanceLayers(*m_vkl);
+    std::vector<VkPhysicalDevice> adapters(numAdapters);
+    if (m_vki->vkEnumeratePhysicalDevices(m_vki->instance(), &numAdapters, adapters.data()) != VK_SUCCESS)
+      throw DxvkError("DxvkInstance::enumAdapters: Failed to enumerate adapters");
     
-    vk::NameList layersEnabled;
-    for (auto l : layers) {
-      if (layersAvailable.supports(l))
-        layersEnabled.add(l);
-      else
-        throw DxvkError(str::format("Requested layer not installed: ", l));
+    std::vector<Rc<DxvkAdapter>> result;
+    for (uint32_t i = 0; i < numAdapters; i++) {
+      Rc<DxvkAdapter> adapter = new DxvkAdapter(this, adapters[i]);
+      
+      if (filter.testAdapter(adapter))
+        result.push_back(adapter);
     }
     
-    return layersEnabled;
+    std::sort(result.begin(), result.end(),
+      [this] (const Rc<DxvkAdapter>& a, const Rc<DxvkAdapter>& b) -> bool {
+        return a->deviceProperties().deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+            && b->deviceProperties().deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+      });
+    
+    if (result.size() == 0) {
+      Logger::warn("DXVK: No adapters found. Please check your "
+                   "device filter settings and Vulkan setup.");
+    }
+    
+    return result;
   }
   
   
-  vk::NameList DxvkInstance::getExtensions(const vk::NameList& layers) {
-    std::vector<const char*> extOptional = { };
-    std::vector<const char*> extRequired = {
-      VK_KHR_SURFACE_EXTENSION_NAME,
-      VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-    };
-    
-    const vk::NameSet extensionsAvailable
-      = vk::NameSet::enumerateInstanceExtensions(*m_vkl, layers);
-    vk::NameList extensionsEnabled;
-    
-    for (auto e : extOptional) {
-      if (extensionsAvailable.supports(e))
-        extensionsEnabled.add(e);
-    }
-    
-    for (auto e : extRequired) {
-      if (!extensionsAvailable.supports(e))
-        throw DxvkError(str::format("DxvkInstance::getExtensions: Extension ", e, " not supported"));
-      extensionsEnabled.add(e);
-    }
-    
-    return extensionsEnabled;
-  }
-  
-  
-  void DxvkInstance::logNameList(const vk::NameList& names) {
+  void DxvkInstance::logNameList(const DxvkNameList& names) {
     for (uint32_t i = 0; i < names.count(); i++)
       Logger::info(str::format("  ", names.name(i)));
   }

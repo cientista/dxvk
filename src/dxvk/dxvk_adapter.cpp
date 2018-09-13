@@ -13,13 +13,10 @@ namespace dxvk {
   : m_instance      (instance),
     m_vki           (instance->vki()),
     m_handle        (handle) {
-    uint32_t numQueueFamilies = 0;
-    m_vki->vkGetPhysicalDeviceQueueFamilyProperties(
-      m_handle, &numQueueFamilies, nullptr);
-    
-    m_queueFamilies.resize(numQueueFamilies);
-    m_vki->vkGetPhysicalDeviceQueueFamilyProperties(
-      m_handle, &numQueueFamilies, m_queueFamilies.data());
+    this->queryExtensions();
+    this->queryDeviceInfo();
+    this->queryDeviceFeatures();
+    this->queryDeviceQueues();
   }
   
   
@@ -33,32 +30,10 @@ namespace dxvk {
   }
   
   
-  VkPhysicalDeviceProperties DxvkAdapter::deviceProperties() const {
-    VkPhysicalDeviceProperties properties;
-    m_vki->vkGetPhysicalDeviceProperties(m_handle, &properties);
-    
-    if (DxvkGpuVendor(properties.vendorID) == DxvkGpuVendor::Nvidia) {
-      properties.driverVersion = VK_MAKE_VERSION(
-        VK_VERSION_MAJOR(properties.driverVersion),
-        VK_VERSION_MINOR(properties.driverVersion >> 0) >> 2,
-        VK_VERSION_PATCH(properties.driverVersion >> 2) >> 4);
-    }
-    
-    return properties;
-  }
-  
-  
   VkPhysicalDeviceMemoryProperties DxvkAdapter::memoryProperties() const {
     VkPhysicalDeviceMemoryProperties memoryProperties;
     m_vki->vkGetPhysicalDeviceMemoryProperties(m_handle, &memoryProperties);
     return memoryProperties;
-  }
-  
-  
-  VkPhysicalDeviceFeatures DxvkAdapter::features() const {
-    VkPhysicalDeviceFeatures features;
-    m_vki->vkGetPhysicalDeviceFeatures(m_handle, &features);
-    return features;
   }
   
   
@@ -97,86 +72,170 @@ namespace dxvk {
   }
   
   
-  bool DxvkAdapter::checkFeatureSupport(
-    const VkPhysicalDeviceFeatures& required) const {
-    const VkPhysicalDeviceFeatures supported = this->features();
-    
-    return (supported.robustBufferAccess || !required.robustBufferAccess)
-        && (supported.fullDrawIndexUint32 || !required.fullDrawIndexUint32)
-        && (supported.imageCubeArray || !required.imageCubeArray)
-        && (supported.independentBlend || !required.independentBlend)
-        && (supported.geometryShader || !required.geometryShader)
-        && (supported.tessellationShader || !required.tessellationShader)
-        && (supported.sampleRateShading || !required.sampleRateShading)
-        && (supported.dualSrcBlend || !required.dualSrcBlend)
-        && (supported.logicOp || !required.logicOp)
-        && (supported.multiDrawIndirect || !required.multiDrawIndirect)
-        && (supported.drawIndirectFirstInstance || !required.drawIndirectFirstInstance)
-        && (supported.depthClamp || !required.depthClamp)
-        && (supported.depthBiasClamp || !required.depthBiasClamp)
-        && (supported.fillModeNonSolid || !required.fillModeNonSolid)
-        && (supported.depthBounds || !required.depthBounds)
-        && (supported.wideLines || !required.wideLines)
-        && (supported.largePoints || !required.largePoints)
-        && (supported.alphaToOne || !required.alphaToOne)
-        && (supported.multiViewport || !required.multiViewport)
-        && (supported.samplerAnisotropy || !required.samplerAnisotropy)
-        && (supported.textureCompressionETC2 || !required.textureCompressionETC2)
-        && (supported.textureCompressionASTC_LDR || !required.textureCompressionASTC_LDR)
-        && (supported.textureCompressionBC || !required.textureCompressionBC)
-        && (supported.occlusionQueryPrecise || !required.occlusionQueryPrecise)
-        && (supported.pipelineStatisticsQuery || !required.pipelineStatisticsQuery)
-        && (supported.vertexPipelineStoresAndAtomics || !required.vertexPipelineStoresAndAtomics)
-        && (supported.fragmentStoresAndAtomics || !required.fragmentStoresAndAtomics)
-        && (supported.shaderTessellationAndGeometryPointSize || !required.shaderTessellationAndGeometryPointSize)
-        && (supported.shaderImageGatherExtended || !required.shaderImageGatherExtended)
-        && (supported.shaderStorageImageExtendedFormats || !required.shaderStorageImageExtendedFormats)
-        && (supported.shaderStorageImageMultisample || !required.shaderStorageImageMultisample)
-        && (supported.shaderStorageImageReadWithoutFormat || !required.shaderStorageImageReadWithoutFormat)
-        && (supported.shaderStorageImageWriteWithoutFormat || !required.shaderStorageImageWriteWithoutFormat)
-        && (supported.shaderUniformBufferArrayDynamicIndexing || !required.shaderUniformBufferArrayDynamicIndexing)
-        && (supported.shaderSampledImageArrayDynamicIndexing || !required.shaderSampledImageArrayDynamicIndexing)
-        && (supported.shaderStorageBufferArrayDynamicIndexing || !required.shaderStorageBufferArrayDynamicIndexing)
-        && (supported.shaderStorageImageArrayDynamicIndexing || !required.shaderStorageImageArrayDynamicIndexing)
-        && (supported.shaderClipDistance || !required.shaderClipDistance)
-        && (supported.shaderCullDistance || !required.shaderCullDistance)
-        && (supported.shaderFloat64 || !required.shaderFloat64)
-        && (supported.shaderInt64 || !required.shaderInt64)
-        && (supported.shaderInt16 || !required.shaderInt16)
-        && (supported.shaderResourceResidency || !required.shaderResourceResidency)
-        && (supported.shaderResourceMinLod || !required.shaderResourceMinLod)
-        && (supported.sparseBinding || !required.sparseBinding)
-        && (supported.sparseResidencyBuffer || !required.sparseResidencyBuffer)
-        && (supported.sparseResidencyImage2D || !required.sparseResidencyImage2D)
-        && (supported.sparseResidencyImage3D || !required.sparseResidencyImage3D)
-        && (supported.sparseResidency2Samples || !required.sparseResidency2Samples)
-        && (supported.sparseResidency4Samples || !required.sparseResidency4Samples)
-        && (supported.sparseResidency8Samples || !required.sparseResidency8Samples)
-        && (supported.sparseResidency16Samples || !required.sparseResidency16Samples)
-        && (supported.sparseResidencyAliased || !required.sparseResidencyAliased)
-        && (supported.variableMultisampleRate || !required.variableMultisampleRate)
-        && (supported.inheritedQueries || !required.inheritedQueries);
+  bool DxvkAdapter::checkFeatureSupport(const DxvkDeviceFeatures& required) const {
+    return (m_deviceFeatures.core.features.robustBufferAccess
+                || !required.core.features.robustBufferAccess)
+        && (m_deviceFeatures.core.features.fullDrawIndexUint32
+                || !required.core.features.fullDrawIndexUint32)
+        && (m_deviceFeatures.core.features.imageCubeArray
+                || !required.core.features.imageCubeArray)
+        && (m_deviceFeatures.core.features.independentBlend
+                || !required.core.features.independentBlend)
+        && (m_deviceFeatures.core.features.geometryShader
+                || !required.core.features.geometryShader)
+        && (m_deviceFeatures.core.features.tessellationShader
+                || !required.core.features.tessellationShader)
+        && (m_deviceFeatures.core.features.sampleRateShading
+                || !required.core.features.sampleRateShading)
+        && (m_deviceFeatures.core.features.dualSrcBlend
+                || !required.core.features.dualSrcBlend)
+        && (m_deviceFeatures.core.features.logicOp
+                || !required.core.features.logicOp)
+        && (m_deviceFeatures.core.features.multiDrawIndirect
+                || !required.core.features.multiDrawIndirect)
+        && (m_deviceFeatures.core.features.drawIndirectFirstInstance
+                || !required.core.features.drawIndirectFirstInstance)
+        && (m_deviceFeatures.core.features.depthClamp
+                || !required.core.features.depthClamp)
+        && (m_deviceFeatures.core.features.depthBiasClamp
+                || !required.core.features.depthBiasClamp)
+        && (m_deviceFeatures.core.features.fillModeNonSolid
+                || !required.core.features.fillModeNonSolid)
+        && (m_deviceFeatures.core.features.depthBounds
+                || !required.core.features.depthBounds)
+        && (m_deviceFeatures.core.features.wideLines
+                || !required.core.features.wideLines)
+        && (m_deviceFeatures.core.features.largePoints
+                || !required.core.features.largePoints)
+        && (m_deviceFeatures.core.features.alphaToOne
+                || !required.core.features.alphaToOne)
+        && (m_deviceFeatures.core.features.multiViewport
+                || !required.core.features.multiViewport)
+        && (m_deviceFeatures.core.features.samplerAnisotropy
+                || !required.core.features.samplerAnisotropy)
+        && (m_deviceFeatures.core.features.textureCompressionETC2
+                || !required.core.features.textureCompressionETC2)
+        && (m_deviceFeatures.core.features.textureCompressionASTC_LDR
+                || !required.core.features.textureCompressionASTC_LDR)
+        && (m_deviceFeatures.core.features.textureCompressionBC
+                || !required.core.features.textureCompressionBC)
+        && (m_deviceFeatures.core.features.occlusionQueryPrecise
+                || !required.core.features.occlusionQueryPrecise)
+        && (m_deviceFeatures.core.features.pipelineStatisticsQuery
+                || !required.core.features.pipelineStatisticsQuery)
+        && (m_deviceFeatures.core.features.vertexPipelineStoresAndAtomics
+                || !required.core.features.vertexPipelineStoresAndAtomics)
+        && (m_deviceFeatures.core.features.fragmentStoresAndAtomics
+                || !required.core.features.fragmentStoresAndAtomics)
+        && (m_deviceFeatures.core.features.shaderTessellationAndGeometryPointSize
+                || !required.core.features.shaderTessellationAndGeometryPointSize)
+        && (m_deviceFeatures.core.features.shaderImageGatherExtended
+                || !required.core.features.shaderImageGatherExtended)
+        && (m_deviceFeatures.core.features.shaderStorageImageExtendedFormats
+                || !required.core.features.shaderStorageImageExtendedFormats)
+        && (m_deviceFeatures.core.features.shaderStorageImageMultisample
+                || !required.core.features.shaderStorageImageMultisample)
+        && (m_deviceFeatures.core.features.shaderStorageImageReadWithoutFormat
+                || !required.core.features.shaderStorageImageReadWithoutFormat)
+        && (m_deviceFeatures.core.features.shaderStorageImageWriteWithoutFormat
+                || !required.core.features.shaderStorageImageWriteWithoutFormat)
+        && (m_deviceFeatures.core.features.shaderUniformBufferArrayDynamicIndexing
+                || !required.core.features.shaderUniformBufferArrayDynamicIndexing)
+        && (m_deviceFeatures.core.features.shaderSampledImageArrayDynamicIndexing
+                || !required.core.features.shaderSampledImageArrayDynamicIndexing)
+        && (m_deviceFeatures.core.features.shaderStorageBufferArrayDynamicIndexing
+                || !required.core.features.shaderStorageBufferArrayDynamicIndexing)
+        && (m_deviceFeatures.core.features.shaderStorageImageArrayDynamicIndexing
+                || !required.core.features.shaderStorageImageArrayDynamicIndexing)
+        && (m_deviceFeatures.core.features.shaderClipDistance
+                || !required.core.features.shaderClipDistance)
+        && (m_deviceFeatures.core.features.shaderCullDistance
+                || !required.core.features.shaderCullDistance)
+        && (m_deviceFeatures.core.features.shaderFloat64
+                || !required.core.features.shaderFloat64)
+        && (m_deviceFeatures.core.features.shaderInt64
+                || !required.core.features.shaderInt64)
+        && (m_deviceFeatures.core.features.shaderInt16
+                || !required.core.features.shaderInt16)
+        && (m_deviceFeatures.core.features.shaderResourceResidency
+                || !required.core.features.shaderResourceResidency)
+        && (m_deviceFeatures.core.features.shaderResourceMinLod
+                || !required.core.features.shaderResourceMinLod)
+        && (m_deviceFeatures.core.features.sparseBinding
+                || !required.core.features.sparseBinding)
+        && (m_deviceFeatures.core.features.sparseResidencyBuffer
+                || !required.core.features.sparseResidencyBuffer)
+        && (m_deviceFeatures.core.features.sparseResidencyImage2D
+                || !required.core.features.sparseResidencyImage2D)
+        && (m_deviceFeatures.core.features.sparseResidencyImage3D
+                || !required.core.features.sparseResidencyImage3D)
+        && (m_deviceFeatures.core.features.sparseResidency2Samples
+                || !required.core.features.sparseResidency2Samples)
+        && (m_deviceFeatures.core.features.sparseResidency4Samples
+                || !required.core.features.sparseResidency4Samples)
+        && (m_deviceFeatures.core.features.sparseResidency8Samples
+                || !required.core.features.sparseResidency8Samples)
+        && (m_deviceFeatures.core.features.sparseResidency16Samples
+                || !required.core.features.sparseResidency16Samples)
+        && (m_deviceFeatures.core.features.sparseResidencyAliased
+                || !required.core.features.sparseResidencyAliased)
+        && (m_deviceFeatures.core.features.variableMultisampleRate
+                || !required.core.features.variableMultisampleRate)
+        && (m_deviceFeatures.core.features.inheritedQueries
+                || !required.core.features.inheritedQueries)
+        && (m_deviceFeatures.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor
+                || !required.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor)
+        && (m_deviceFeatures.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor
+                || !required.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor);
   }
   
   
-  Rc<DxvkDevice> DxvkAdapter::createDevice(const VkPhysicalDeviceFeatures& enabledFeatures) {
-    const Rc<DxvkDeviceExtensions> extensions = new DxvkDeviceExtensions();
-    extensions->enableExtensions(vk::NameSet::enumerateDeviceExtensions(*m_vki, m_handle));
-    
-    if (!extensions->checkSupportStatus())
+  Rc<DxvkDevice> DxvkAdapter::createDevice(DxvkDeviceFeatures enabledFeatures) {
+    DxvkDeviceExtensions devExtensions;
+
+    std::array<DxvkExt*, 11> devExtensionList = {{
+      &devExtensions.extShaderViewportIndexLayer,
+      &devExtensions.extVertexAttributeDivisor,
+      &devExtensions.khrDedicatedAllocation,
+      &devExtensions.khrDescriptorUpdateTemplate,
+      &devExtensions.khrGetMemoryRequirements2,
+      &devExtensions.khrImageFormatList,
+      &devExtensions.khrMaintenance1,
+      &devExtensions.khrMaintenance2,
+      &devExtensions.khrSamplerMirrorClampToEdge,
+      &devExtensions.khrShaderDrawParameters,
+      &devExtensions.khrSwapchain,
+    }};
+
+    DxvkNameSet extensionsEnabled;
+
+    if (!m_deviceExtensions.enableExtensions(
+          devExtensionList.size(),
+          devExtensionList.data(),
+          extensionsEnabled))
       throw DxvkError("DxvkAdapter: Failed to create device");
     
-    const vk::NameList enabledExtensions =
-      extensions->getEnabledExtensionNames();
+    // Enable additional extensions if necessary
+    extensionsEnabled.merge(g_vrInstance.getDeviceExtensions(getAdapterIndex()));
+    DxvkNameList extensionNameList = extensionsEnabled.toNameList();
     
     Logger::info("Enabled device extensions:");
-    this->logNameList(enabledExtensions);
+    this->logNameList(extensionNameList);
+
+    // Create pNext chain for additional device features
+    enabledFeatures.core.pNext = nullptr;
+
+    if (devExtensions.extVertexAttributeDivisor.revision() >= 3) {
+      enabledFeatures.extVertexAttributeDivisor.pNext = enabledFeatures.core.pNext;
+      enabledFeatures.core.pNext = &enabledFeatures.extVertexAttributeDivisor;
+    }
     
+    // Create one single queue for graphics and present
     float queuePriority = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> queueInfos;
     
-    const uint32_t gIndex = this->graphicsQueueFamily();
-    const uint32_t pIndex = this->presentQueueFamily();
+    uint32_t gIndex = this->graphicsQueueFamily();
+    uint32_t pIndex = this->presentQueueFamily();
     
     VkDeviceQueueCreateInfo graphicsQueue;
     graphicsQueue.sType             = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -192,18 +251,18 @@ namespace dxvk {
       presentQueue.queueFamilyIndex        = pIndex;
       queueInfos.push_back(presentQueue);
     }
-    
+
     VkDeviceCreateInfo info;
     info.sType                      = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    info.pNext                      = nullptr;
+    info.pNext                      = enabledFeatures.core.pNext;
     info.flags                      = 0;
     info.queueCreateInfoCount       = queueInfos.size();
     info.pQueueCreateInfos          = queueInfos.data();
     info.enabledLayerCount          = 0;
     info.ppEnabledLayerNames        = nullptr;
-    info.enabledExtensionCount      = enabledExtensions.count();
-    info.ppEnabledExtensionNames    = enabledExtensions.names();
-    info.pEnabledFeatures           = &enabledFeatures;
+    info.enabledExtensionCount      = extensionNameList.count();
+    info.ppEnabledExtensionNames    = extensionNameList.names();
+    info.pEnabledFeatures           = &enabledFeatures.core.features;
     
     VkDevice device = VK_NULL_HANDLE;
     
@@ -212,7 +271,7 @@ namespace dxvk {
     
     Rc<DxvkDevice> result = new DxvkDevice(this,
       new vk::DeviceFn(m_vki->instance(), device),
-      extensions, enabledFeatures);
+      devExtensions, enabledFeatures);
     result->initResources();
     return result;
   }
@@ -255,7 +314,69 @@ namespace dxvk {
   }
   
   
-  void DxvkAdapter::logNameList(const vk::NameList& names) {
+  void DxvkAdapter::queryExtensions() {
+    m_deviceExtensions = DxvkNameSet::enumDeviceExtensions(m_vki, m_handle);
+  }
+
+
+  void DxvkAdapter::queryDeviceInfo() {
+    m_deviceInfo = DxvkDeviceInfo();
+    m_deviceInfo.core.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2_KHR;
+    m_deviceInfo.core.pNext = nullptr;
+
+    if (m_deviceExtensions.supports(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME)) {
+      m_deviceInfo.extVertexAttributeDivisor.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT;
+      m_deviceInfo.extVertexAttributeDivisor.pNext = std::exchange(m_deviceInfo.core.pNext, &m_deviceInfo.extVertexAttributeDivisor);
+    }
+
+    m_vki->vkGetPhysicalDeviceProperties2KHR(m_handle, &m_deviceInfo.core);
+    
+    // Nvidia reports the driver version in a slightly different format
+    if (DxvkGpuVendor(m_deviceInfo.core.properties.vendorID) == DxvkGpuVendor::Nvidia) {
+      m_deviceInfo.core.properties.driverVersion = VK_MAKE_VERSION(
+        VK_VERSION_MAJOR(m_deviceInfo.core.properties.driverVersion),
+        VK_VERSION_MINOR(m_deviceInfo.core.properties.driverVersion >> 0) >> 2,
+        VK_VERSION_PATCH(m_deviceInfo.core.properties.driverVersion >> 2) >> 4);
+    }
+  }
+
+
+  void DxvkAdapter::queryDeviceFeatures() {
+    m_deviceFeatures = DxvkDeviceFeatures();
+    m_deviceFeatures.core.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR;
+    m_deviceFeatures.core.pNext = nullptr;
+
+    if (m_deviceExtensions.supports(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME) >= 3) {
+      m_deviceFeatures.extVertexAttributeDivisor.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
+      m_deviceFeatures.extVertexAttributeDivisor.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extVertexAttributeDivisor);
+    }
+
+    m_vki->vkGetPhysicalDeviceFeatures2KHR(m_handle, &m_deviceFeatures.core);
+  }
+
+
+  void DxvkAdapter::queryDeviceQueues() {
+    uint32_t numQueueFamilies = 0;
+    m_vki->vkGetPhysicalDeviceQueueFamilyProperties(
+      m_handle, &numQueueFamilies, nullptr);
+    
+    m_queueFamilies.resize(numQueueFamilies);
+    m_vki->vkGetPhysicalDeviceQueueFamilyProperties(
+      m_handle, &numQueueFamilies, m_queueFamilies.data());
+  }
+
+
+  uint32_t DxvkAdapter::getAdapterIndex() const {
+    for (uint32_t i = 0; m_instance->enumAdapters(i) != nullptr; i++) {
+      if (m_instance->enumAdapters(i).ptr() == this)
+        return i;
+    }
+
+    return ~0u;
+  }
+  
+  
+  void DxvkAdapter::logNameList(const DxvkNameList& names) {
     for (uint32_t i = 0; i < names.count(); i++)
       Logger::info(str::format("  ", names.name(i)));
   }

@@ -6,7 +6,7 @@ namespace dxvk {
   D3D11Query::D3D11Query(
           D3D11Device*      device,
     const D3D11_QUERY_DESC& desc)
-  : m_device(device), m_desc(desc) {
+  : m_device(device), m_desc(desc), m_d3d10(this) {
     switch (m_desc.Query) {
       case D3D11_QUERY_EVENT:
         m_event = new DxvkEvent();
@@ -58,10 +58,24 @@ namespace dxvk {
       return S_OK;
     }
     
-    if (riid == __uuidof(ID3D11Predicate)
-     && m_desc.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
-      *ppvObject = ref(this);
+    if (riid == __uuidof(IUnknown)
+     || riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10Asynchronous)
+     || riid == __uuidof(ID3D10Query)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
+    }
+    
+    if (m_desc.Query == D3D11_QUERY_OCCLUSION_PREDICATE) {
+      if (riid == __uuidof(ID3D11Predicate)) {
+        *ppvObject = ref(this);
+        return S_OK;
+      }
+
+      if (riid == __uuidof(ID3D10Predicate)) {
+        *ppvObject = ref(&m_d3d10);
+        return S_OK;
+      }
     }
     
     Logger::warn("D3D11Query: Unknown interface query");
@@ -132,9 +146,8 @@ namespace dxvk {
   
   
   bool D3D11Query::HasBeginEnabled() const {
-    return m_desc.Query == D3D11_QUERY_OCCLUSION
-        || m_desc.Query == D3D11_QUERY_OCCLUSION_PREDICATE
-        || m_desc.Query == D3D11_QUERY_PIPELINE_STATISTICS;
+    return m_desc.Query != D3D11_QUERY_EVENT
+        && m_desc.Query != D3D11_QUERY_TIMESTAMP;
   }
   
   
@@ -187,9 +200,15 @@ namespace dxvk {
     } else {
       DxvkQueryData queryData = {};
       
-      if (m_query                     != nullptr
-       && m_query->getData(queryData) != DxvkQueryStatus::Available)
-        return S_FALSE;
+      if (m_query != nullptr) {
+        DxvkQueryStatus status = m_query->getData(queryData);
+
+        if (status == DxvkQueryStatus::Created)
+          return DXGI_ERROR_INVALID_CALL;
+        
+        if (status != DxvkQueryStatus::Available)
+          return S_FALSE;
+      }
       
       if (pData == nullptr)
         return S_OK;
@@ -208,9 +227,8 @@ namespace dxvk {
           return S_OK;
         
         case D3D11_QUERY_TIMESTAMP_DISJOINT: {
-          // FIXME return correct frequency
           auto data = static_cast<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT*>(pData);
-          data->Frequency = 1000;
+          data->Frequency = GetTimestampQueryFrequency();
           data->Disjoint = FALSE;
         } return S_OK;
         
@@ -234,6 +252,15 @@ namespace dxvk {
           return E_INVALIDARG;
       }
     }
+  }
+  
+  
+  UINT64 D3D11Query::GetTimestampQueryFrequency() const {
+    Rc<DxvkDevice>  device  = m_device->GetDXVKDevice();
+    Rc<DxvkAdapter> adapter = device->adapter();
+
+    VkPhysicalDeviceLimits limits = adapter->deviceProperties().limits;
+    return uint64_t(1'000'000'000.0f / limits.timestampPeriod);
   }
   
 }

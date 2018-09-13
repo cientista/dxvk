@@ -86,6 +86,16 @@ namespace dxvk::vk {
     VULKAN_FN(vkGetPhysicalDeviceProperties);
     VULKAN_FN(vkGetPhysicalDeviceQueueFamilyProperties);
     VULKAN_FN(vkGetPhysicalDeviceSparseImageFormatProperties);
+
+    #ifdef VK_KHR_get_physical_device_properties2
+    VULKAN_FN(vkGetPhysicalDeviceFeatures2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceProperties2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceFormatProperties2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceImageFormatProperties2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceQueueFamilyProperties2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceMemoryProperties2KHR);
+    VULKAN_FN(vkGetPhysicalDeviceSparseImageFormatProperties2KHR);
+    #endif
     
     #ifdef VK_KHR_surface
     #ifdef VK_USE_PLATFORM_XCB_KHR
@@ -268,6 +278,11 @@ namespace dxvk::vk {
     VULKAN_FN(vkGetSwapchainImagesKHR);
     VULKAN_FN(vkAcquireNextImageKHR);
     VULKAN_FN(vkQueuePresentKHR);
+    #endif
+
+    #ifdef VK_KHR_get_memory_requirements2
+    VULKAN_FN(vkGetBufferMemoryRequirements2KHR);
+    VULKAN_FN(vkGetImageMemoryRequirements2KHR);
     #endif
   };
   

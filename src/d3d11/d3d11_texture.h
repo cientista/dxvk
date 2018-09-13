@@ -1,6 +1,8 @@
 #pragma once
 
-#include <dxvk_device.h>
+#include "../dxvk/dxvk_device.h"
+
+#include "../d3d10/d3d10_texture.h"
 
 #include "d3d11_device_child.h"
 #include "d3d11_interfaces.h"
@@ -149,6 +151,21 @@ namespace dxvk {
     void GetDevice(ID3D11Device** ppDevice) const;
     
     /**
+     * \brief Checks whether a view can be created for this textue
+     * 
+     * View formats are only compatible if they are either identical
+     * or from the same family of typeless formats, where the resource
+     * format must be typeless and the view format must be typed. This
+     * will also check whether the required bind flags are supported.
+     * \param [in] BindFlags Bind flags for the view
+     * \param [in] Format The desired view format
+     * \returns \c true if the format is compatible
+     */
+    bool CheckViewCompatibility(
+            UINT                BindFlags,
+            DXGI_FORMAT         Format) const;
+    
+    /**
      * \brief Normalizes and validates texture description
      * 
      * Fills in undefined values and validates the texture
@@ -177,6 +194,10 @@ namespace dxvk {
     BOOL CheckImageSupport(
       const DxvkImageCreateInfo*  pImageInfo,
             VkImageTiling         Tiling) const;
+    
+    BOOL CheckFormatFeatureSupport(
+            VkFormat              Format,
+            VkFormatFeatureFlags  Features) const;
     
     D3D11_COMMON_TEXTURE_MAP_MODE DetermineMapMode(
       const DxvkImageCreateInfo*  pImageInfo) const;
@@ -262,11 +283,16 @@ namespace dxvk {
     D3D11CommonTexture* GetCommonTexture() {
       return &m_texture;
     }
+
+    D3D10Texture1D* GetD3D10Iface() {
+      return &m_d3d10;
+    }
     
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
+    D3D10Texture1D        m_d3d10;
     
   };
   
@@ -304,10 +330,15 @@ namespace dxvk {
       return &m_texture;
     }
     
+    D3D10Texture2D* GetD3D10Iface() {
+      return &m_d3d10;
+    }
+
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
+    D3D10Texture2D        m_d3d10;
     
   };
   
@@ -345,20 +376,24 @@ namespace dxvk {
       return &m_texture;
     }
     
+    D3D10Texture3D* GetD3D10Iface() {
+      return &m_d3d10;
+    }
+
   private:
     
     D3D11CommonTexture    m_texture;
     D3D11VkInteropSurface m_interop;
+    D3D10Texture3D        m_d3d10;
     
   };
   
   
   /**
-   * \brief Retrieves common info about a texture
+   * \brief Retrieves texture from resource pointer
    * 
-   * \param [in] pResource The resource. Must be a texture.
-   * \param [out] pTextureInfo Pointer to the texture info struct.
-   * \returns E_INVALIDARG if the resource is not a texture
+   * \param [in] pResource The resource to query
+   * \returns Pointer to texture info, or \c nullptr
    */
   D3D11CommonTexture* GetCommonTexture(
           ID3D11Resource*       pResource);

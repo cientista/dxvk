@@ -121,19 +121,32 @@ namespace dxvk {
     if (modes.size() == 0)
       return DXGI_ERROR_NOT_FOUND;
 
+    // If no valid resolution is specified, find the
+    // closest match for the current display resolution
+    UINT targetWidth  = pModeToMatch->Width;
+    UINT targetHeight = pModeToMatch->Height;
+
+    if (targetWidth == 0 || targetHeight == 0) {
+      DXGI_MODE_DESC activeMode = { };
+      GetDisplayMode(&activeMode, ENUM_CURRENT_SETTINGS);
+
+      targetWidth  = activeMode.Width;
+      targetHeight = activeMode.Height;
+    }
+
     // Select mode with minimal height+width difference
     UINT minDifference = std::numeric_limits<unsigned int>::max();
     
-    for (auto& mode : modes) {
-      UINT currDifference = std::abs(int(pModeToMatch->Width  - mode.Width))
-                          + std::abs(int(pModeToMatch->Height - mode.Height));
+    for (auto mode : modes) {
+      UINT currDifference = std::abs(int(targetWidth  - mode.Width))
+                          + std::abs(int(targetHeight - mode.Height));
 
       if (currDifference <= minDifference) {
         minDifference = currDifference;
         *pClosestMatch = mode;
       }
     }
-    
+
     return S_OK;
   }
   
@@ -199,7 +212,7 @@ namespace dxvk {
         DXGI_MODE_DESC mode;
         mode.Width            = devMode.dmPelsWidth;
         mode.Height           = devMode.dmPelsHeight;
-        mode.RefreshRate      = { devMode.dmDisplayFrequency, 1 };
+        mode.RefreshRate      = { devMode.dmDisplayFrequency * 1000, 1000 };
         mode.Format           = EnumFormat;
         mode.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE;
         mode.Scaling          = DXGI_MODE_SCALING_UNSPECIFIED;
@@ -371,6 +384,10 @@ namespace dxvk {
       devMode.dmDisplayFrequency = pMode->RefreshRate.Numerator
                                  / pMode->RefreshRate.Denominator;
     }
+    
+    Logger::info(str::format("DXGI: Setting display mode: ",
+      devMode.dmPelsWidth, "x", devMode.dmPelsHeight, "@",
+      devMode.dmDisplayFrequency));
     
     LONG status = ::ChangeDisplaySettingsExW(
       monInfo.szDevice, &devMode, nullptr, CDS_FULLSCREEN, nullptr);

@@ -2,6 +2,8 @@
 
 #include "../dxvk/dxvk_device.h"
 
+#include "../d3d10/d3d10_view_rtv.h"
+
 #include "d3d11_device_child.h"
 
 namespace dxvk {
@@ -16,10 +18,9 @@ namespace dxvk {
   public:
     
     D3D11RenderTargetView(
-            D3D11Device*                      device,
-            ID3D11Resource*                   resource,
-      const D3D11_RENDER_TARGET_VIEW_DESC&    desc,
-      const Rc<DxvkImageView>&                view);
+            D3D11Device*                      pDevice,
+            ID3D11Resource*                   pResource,
+      const D3D11_RENDER_TARGET_VIEW_DESC*    pDesc);
     
     ~D3D11RenderTargetView();
     
@@ -42,8 +43,13 @@ namespace dxvk {
     }
     
     VkImageLayout GetRenderLayout() const {
-      // Currently no reason to use anything else
-      return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      return m_view->imageInfo().tiling == VK_IMAGE_TILING_OPTIMAL
+        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        : VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    D3D10RenderTargetView* GetD3D10Iface() {
+      return &m_d3d10;
     }
     
     static HRESULT GetDescFromResource(
@@ -57,9 +63,10 @@ namespace dxvk {
   private:
     
     Com<D3D11Device>                  m_device;
-    Com<ID3D11Resource>               m_resource;
+    ID3D11Resource*                   m_resource;
     D3D11_RENDER_TARGET_VIEW_DESC     m_desc;
     Rc<DxvkImageView>                 m_view;
+    D3D10RenderTargetView             m_d3d10;
     
   };
   

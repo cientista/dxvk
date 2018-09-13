@@ -36,12 +36,18 @@ namespace dxvk {
   
   Rc<DxvkImageView> DxvkSwapchain::getImageView(
     const Rc<DxvkSemaphore>& wakeSync) {
+    // AcquireNextImage might interfere with the Vulkan
+    // device queue internally, so we should lock it
+    m_device->lockSubmission();
+
     VkResult status = this->acquireNextImage(wakeSync);
     
     if (status == VK_ERROR_OUT_OF_DATE_KHR) {
       this->recreateSwapchain();
       status = this->acquireNextImage(wakeSync);
     }
+    
+    m_device->unlockSubmission();
     
     if (status != VK_SUCCESS
      && status != VK_SUBOPTIMAL_KHR)
@@ -111,7 +117,7 @@ namespace dxvk {
     swapInfo.pNext                  = nullptr;
     swapInfo.flags                  = 0;
     swapInfo.surface                = m_surface->handle();
-    swapInfo.minImageCount          = m_surface->pickImageCount(caps, mode);
+    swapInfo.minImageCount          = m_surface->pickImageCount(caps, mode, m_properties.preferredBufferCount);
     swapInfo.imageFormat            = fmt.format;
     swapInfo.imageColorSpace        = fmt.colorSpace;
     swapInfo.imageExtent            = m_surface->pickImageExtent(caps, m_properties.preferredBufferSize);
@@ -163,6 +169,7 @@ namespace dxvk {
     DxvkImageViewCreateInfo viewInfo;
     viewInfo.type         = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format       = fmt.format;
+    viewInfo.usage        = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     viewInfo.aspect       = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.minLevel     = 0;
     viewInfo.numLevels    = 1;

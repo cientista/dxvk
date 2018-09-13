@@ -6,11 +6,7 @@ namespace dxvk {
   D3D11RasterizerState::D3D11RasterizerState(
           D3D11Device*                    device,
     const D3D11_RASTERIZER_DESC1&         desc)
-  : m_device(device), m_desc(desc) {
-    
-    // State that is not supported in D3D11
-    m_state.enableDiscard = VK_FALSE;
-    
+  : m_device(device), m_desc(desc), m_d3d10(this) {
     // Polygon mode. Determines whether the rasterizer fills
     // a polygon or renders lines connecting the vertices.
     m_state.polygonMode = VK_POLYGON_MODE_FILL;
@@ -50,10 +46,7 @@ namespace dxvk {
     m_state.depthBiasConstant = static_cast<float>(desc.DepthBias);
     m_state.depthBiasClamp    = desc.DepthBiasClamp;
     m_state.depthBiasSlope    = desc.SlopeScaledDepthBias;
-    m_state.enableDepthClamp  = desc.DepthClipEnable ? VK_FALSE : VK_TRUE;
-    
-    if (!desc.DepthClipEnable)
-      Logger::warn("D3D11RasterizerState: Depth clamp not properly supported");
+    m_state.depthClampEnable  = desc.DepthClipEnable ? VK_FALSE : VK_TRUE;
     
     if (desc.AntialiasedLineEnable)
       Logger::err("D3D11RasterizerState: Antialiased lines not supported");
@@ -76,6 +69,12 @@ namespace dxvk {
      || riid == __uuidof(ID3D11RasterizerState)
      || riid == __uuidof(ID3D11RasterizerState1)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+    
+    if (riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10RasterizerState)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     

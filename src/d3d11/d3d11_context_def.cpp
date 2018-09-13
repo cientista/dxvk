@@ -23,6 +23,16 @@ namespace dxvk {
   }
   
   
+  HRESULT STDMETHODCALLTYPE D3D11DeferredContext::GetData(
+          ID3D11Asynchronous*               pAsync,
+          void*                             pData,
+          UINT                              DataSize,
+          UINT                              GetDataFlags) {
+    Logger::err("D3D11: GetData called on a deferred context");
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+
   void STDMETHODCALLTYPE D3D11DeferredContext::Flush() {
     Logger::err("D3D11: Flush called on a deferred context");
   }
@@ -92,7 +102,7 @@ namespace dxvk {
       m_mappedResources.push_back(entry);
       
       // Fill mapped resource structure
-      pMappedResource->pData      = entry.DataSlice.ptr();
+      pMappedResource->pData      = entry.MapPointer;
       pMappedResource->RowPitch   = entry.RowPitch;
       pMappedResource->DepthPitch = entry.DepthPitch;
       return S_OK;
@@ -107,7 +117,7 @@ namespace dxvk {
       // Return same memory region as earlier
       entry->MapType = D3D11_MAP_WRITE_NO_OVERWRITE;
       
-      pMappedResource->pData      = entry->DataSlice.ptr();
+      pMappedResource->pData      = entry->MapPointer;
       pMappedResource->RowPitch   = entry->RowPitch;
       pMappedResource->DepthPitch = entry->DepthPitch;
       return S_OK;
@@ -145,8 +155,11 @@ namespace dxvk {
           D3D11_MAP                     MapType,
           UINT                          MapFlags,
           D3D11DeferredContextMapEntry* pMapEntry) {
-    const D3D11Buffer* pBuffer = static_cast<D3D11Buffer*>(pResource);
+    D3D11Buffer* pBuffer = static_cast<D3D11Buffer*>(pResource);
     const Rc<DxvkBuffer> buffer = pBuffer->GetBuffer();
+    
+    D3D11_BUFFER_DESC bufferDesc;
+    pBuffer->GetDesc(&bufferDesc);
     
     if (!(buffer->memFlags() & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
       Logger::err("D3D11: Cannot map a device-local buffer");
@@ -158,7 +171,20 @@ namespace dxvk {
     pMapEntry->MapType      = D3D11_MAP_WRITE_DISCARD;
     pMapEntry->RowPitch     = pBuffer->GetSize();
     pMapEntry->DepthPitch   = pBuffer->GetSize();
-    pMapEntry->DataSlice    = AllocUpdateBufferSlice(pBuffer->GetSize());
+    
+    if (bufferDesc.Usage == D3D11_USAGE_DYNAMIC) {
+      // For resources that cannot be written by the GPU,
+      // we may write to the buffer resource directly and
+      // just swap in the physical buffer slice as needed.
+      pMapEntry->BufferSlice = buffer->allocPhysicalSlice();
+      pMapEntry->MapPointer  = pMapEntry->BufferSlice.mapPtr(0);
+    } else {
+      // For GPU-writable resources, we need a data slice
+      // to perform the update operation at execution time.
+      pMapEntry->DataSlice   = AllocUpdateBufferSlice(pBuffer->GetSize());
+      pMapEntry->MapPointer  = pMapEntry->DataSlice.ptr();
+    }
+    
     return S_OK;
   }
   
@@ -203,6 +229,7 @@ namespace dxvk {
     pMapEntry->RowPitch     = xSize;
     pMapEntry->DepthPitch   = ySize;
     pMapEntry->DataSlice    = AllocUpdateBufferSlice(zSize);
+    pMapEntry->MapPointer   = pMapEntry->DataSlice.ptr();
     return S_OK;
   }
   
@@ -212,14 +239,26 @@ namespace dxvk {
     const D3D11DeferredContextMapEntry* pMapEntry) {
     D3D11Buffer* pBuffer = static_cast<D3D11Buffer*>(pResource);
     
-    EmitCs([
-      cDstBuffer = pBuffer->GetBuffer(),
-      cDataSlice = pMapEntry->DataSlice
-    ] (DxvkContext* ctx) {
-      DxvkPhysicalBufferSlice slice = cDstBuffer->allocPhysicalSlice();
-      std::memcpy(slice.mapPtr(0), cDataSlice.ptr(), cDataSlice.length());
-      ctx->invalidateBuffer(cDstBuffer, slice);
-    });
+    D3D11_BUFFER_DESC bufferDesc;
+    pBuffer->GetDesc(&bufferDesc);
+    
+    if (bufferDesc.Usage == D3D11_USAGE_DYNAMIC) {
+      EmitCs([
+        cDstBuffer = pBuffer->GetBuffer(),
+        cPhysSlice = pMapEntry->BufferSlice
+      ] (DxvkContext* ctx) {
+        ctx->invalidateBuffer(cDstBuffer, cPhysSlice);
+      });
+    } else {
+      EmitCs([
+        cDstBuffer = pBuffer->GetBuffer(),
+        cDataSlice = pMapEntry->DataSlice
+      ] (DxvkContext* ctx) {
+        DxvkPhysicalBufferSlice slice = cDstBuffer->allocPhysicalSlice();
+        std::memcpy(slice.mapPtr(0), cDataSlice.ptr(), cDataSlice.length());
+        ctx->invalidateBuffer(cDstBuffer, slice);
+      });
+    }
   }
   
   
@@ -260,9 +299,8 @@ namespace dxvk {
   }
   
   
-  void D3D11DeferredContext::EmitCsChunk(Rc<DxvkCsChunk>&& chunk) {
-    m_commandList->AddChunk(std::move(chunk), m_drawCount);
-    m_drawCount = 0;
+  void D3D11DeferredContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
+    m_commandList->AddChunk(std::move(chunk));
   }
 
 }

@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "dxvk_include.h"
+#include "dxvk_limits.h"
 #include "dxvk_pipelayout.h"
 
 #include "../spirv/spirv_code_buffer.h"
@@ -10,6 +11,29 @@
 namespace dxvk {
   
   class DxvkShader;
+  
+  /**
+   * \brief Built-in specialization constants
+   * 
+   * These specialization constants allow the SPIR-V
+   * shaders to access some pipeline state like D3D
+   * shaders do. They need to be filled in by the
+   * implementation at pipeline compilation time.
+   */
+  enum class DxvkSpecConstantId : uint32_t {
+    /// Special constant ranges that do not count
+    /// towards the spec constant min/max values
+    ColorComponentMappings      = MaxNumResourceSlots,
+
+    // Specialization constants for pipeline state
+    SpecConstantRangeStart      = ColorComponentMappings + MaxNumRenderTargets * 4,
+    RasterizerSampleCount       = SpecConstantRangeStart + 0,
+
+    /// Lowest and highest known spec constant IDs
+    SpecConstantIdMin           = RasterizerSampleCount,
+    SpecConstantIdMax           = RasterizerSampleCount,
+  };
+  
   
   /**
    * \brief Shader interface slots
@@ -21,6 +45,45 @@ namespace dxvk {
   struct DxvkInterfaceSlots {
     uint32_t inputSlots  = 0;
     uint32_t outputSlots = 0;
+  };
+
+
+  /**
+   * \brief Shader constants
+   * 
+   * Each shader can have constant data associated
+   * with it, which needs to be copied to a uniform
+   * buffer. The client API must then bind that buffer
+   * to an API-specific buffer binding when using the
+   * shader for rendering.
+   */
+  class DxvkShaderConstData {
+
+  public:
+
+    DxvkShaderConstData();
+    DxvkShaderConstData(
+            size_t                dwordCount,
+      const uint32_t*             dwordArray);
+
+    DxvkShaderConstData             (DxvkShaderConstData&& other);
+    DxvkShaderConstData& operator = (DxvkShaderConstData&& other);
+
+    ~DxvkShaderConstData();
+
+    const uint32_t* data() const {
+      return m_data;
+    }
+
+    size_t sizeInBytes() const {
+      return m_size * sizeof(uint32_t);
+    }
+
+  private:
+
+    size_t    m_size = 0;
+    uint32_t* m_data = nullptr;
+
   };
   
   
@@ -94,7 +157,8 @@ namespace dxvk {
             uint32_t                slotCount,
       const DxvkResourceSlot*       slotInfos,
       const DxvkInterfaceSlots&     iface,
-      const SpirvCodeBuffer&        code);
+      const SpirvCodeBuffer&        code,
+            DxvkShaderConstData&&   constData);
     
     ~DxvkShader();
     
@@ -150,6 +214,18 @@ namespace dxvk {
     DxvkInterfaceSlots interfaceSlots() const {
       return m_interface;
     }
+
+    /**
+     * \brief Shader constant data
+     * 
+     * Returns a read-only reference to the 
+     * constant data associated with this
+     * shader object.
+     * \returns Shader constant data
+     */
+    const DxvkShaderConstData& shaderConstants() const {
+      return m_constData;
+    }
     
     /**
      * \brief Dumps SPIR-V shader
@@ -158,14 +234,6 @@ namespace dxvk {
      * \param [in] outputStream Stream to write to 
      */
     void dump(std::ostream& outputStream) const;
-    
-    /**
-     * \brief Reads SPIR-V shader
-     * 
-     * Can be used to replace the compiled SPIR-V code.
-     * \param [in] inputStream Stream to read from
-     */
-    void read(std::istream& inputStream);
     
     /**
      * \brief Sets the shader's debug name
@@ -194,6 +262,7 @@ namespace dxvk {
     std::vector<DxvkResourceSlot> m_slots;
     std::vector<size_t>           m_idOffsets;
     DxvkInterfaceSlots            m_interface;
+    DxvkShaderConstData           m_constData;
     std::string                   m_debugName;
     
   };

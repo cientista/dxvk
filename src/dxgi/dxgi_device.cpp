@@ -2,14 +2,21 @@
 #include "dxgi_factory.h"
 
 namespace dxvk {
+
+  constexpr uint32_t DxgiDevice::DefaultFrameLatency;
   
   DxgiDevice::DxgiDevice(
           IDXGIObject*              pContainer,
           IDXGIVkAdapter*           pAdapter,
-    const VkPhysicalDeviceFeatures* pFeatures)
-  : m_container (pContainer),
-    m_adapter   (pAdapter) {
+    const DxgiOptions*              pOptions,
+    const DxvkDeviceFeatures*       pFeatures)
+  : m_container       (pContainer),
+    m_adapter         (pAdapter),
+    m_frameLatencyCap (pOptions->maxFrameLatency) {
     m_device = m_adapter->GetDXVKAdapter()->createDevice(*pFeatures);
+
+    for (uint32_t i = 0; i < m_frameEvents.size(); i++)
+      m_frameEvents[i] = new DxvkEvent();
   }
   
   
@@ -107,15 +114,20 @@ namespace dxvk {
   
   HRESULT STDMETHODCALLTYPE DxgiDevice::GetMaximumFrameLatency(
           UINT*                 pMaxLatency) {
-    Logger::warn("DxgiDevice::GetMaximumFrameLatency: Stub");
-    *pMaxLatency = 1;
+    *pMaxLatency = m_frameLatency;
     return S_OK;
   }
   
   
   HRESULT STDMETHODCALLTYPE DxgiDevice::SetMaximumFrameLatency(
           UINT                  MaxLatency) {
-    Logger::warn("DxgiDevice::SetMaximumFrameLatency: Stub");
+    if (MaxLatency == 0)
+      MaxLatency = DefaultFrameLatency;
+    
+    if (MaxLatency > m_frameEvents.size())
+      MaxLatency = m_frameEvents.size();
+    
+    m_frameLatency = MaxLatency;
     return S_OK;
   }
   
@@ -125,7 +137,7 @@ namespace dxvk {
           IDXGIResource* const*         ppResources,
           DXGI_OFFER_RESOURCE_PRIORITY  Priority) {
 
-    Logger::err("DxgiDevice::OfferResources: not implemented");
+    Logger::err("DxgiDevice::OfferResources: Not implemented");
     return DXGI_ERROR_UNSUPPORTED;
   }
 
@@ -134,19 +146,31 @@ namespace dxvk {
           UINT                          NumResources,
           IDXGIResource* const*         ppResources,
           BOOL*                         pDiscarded) {
-    Logger::err("DxgiDevice::ReclaimResources: not implemented");
+    Logger::err("DxgiDevice::ReclaimResources: Not implemented");
     return DXGI_ERROR_UNSUPPORTED;    
   }
 
 
   HRESULT STDMETHODCALLTYPE DxgiDevice::EnqueueSetEvent(HANDLE hEvent) {
-    Logger::err("DxgiDevice::EnqueueSetEvent: not implemented");
+    Logger::err("DxgiDevice::EnqueueSetEvent: Not implemented");
     return DXGI_ERROR_UNSUPPORTED;           
   }
   
   
   Rc<DxvkDevice> STDMETHODCALLTYPE DxgiDevice::GetDXVKDevice() {
     return m_device;
+  }
+  
+  
+  Rc<DxvkEvent> STDMETHODCALLTYPE DxgiDevice::GetFrameSyncEvent() {
+    uint32_t frameLatency = m_frameLatency;
+
+    if (m_frameLatencyCap != 0
+     && m_frameLatencyCap <= frameLatency)
+      frameLatency = m_frameLatencyCap;
+
+    uint32_t frameId = m_frameId++ % frameLatency;
+    return m_frameEvents[frameId];
   }
   
 }

@@ -7,8 +7,14 @@
 
 #include "../dxgi/dxgi_object.h"
 
+#include "../dxvk/dxvk_cs.h"
+
+#include "../d3d10/d3d10_device.h"
+
 #include "../util/com/com_private_data.h"
 
+#include "d3d11_counter_buffer.h"
+#include "d3d11_initializer.h"
 #include "d3d11_interfaces.h"
 #include "d3d11_options.h"
 #include "d3d11_shader.h"
@@ -19,13 +25,14 @@ namespace dxvk {
   class DxgiAdapter;
   
   class D3D11Buffer;
+  class D3D11CommonShader;
+  class D3D11CommonTexture;
   class D3D11Counter;
   class D3D11DeviceContext;
   class D3D11ImmediateContext;
   class D3D11Predicate;
   class D3D11Presenter;
   class D3D11Query;
-  class D3D11ShaderModule;
   class D3D11Texture1D;
   class D3D11Texture2D;
   class D3D11Texture3D;
@@ -314,27 +321,44 @@ namespace dxvk {
       return m_dxvkDevice;
     }
     
-    DxvkBufferSlice AllocateCounterSlice();
-    
-    void FreeCounterSlice(const DxvkBufferSlice& Slice);
-    
     void FlushInitContext();
     
     VkPipelineStageFlags GetEnabledShaderStages() const;
     
-    DXGI_VK_FORMAT_INFO STDMETHODCALLTYPE LookupFormat(
-            DXGI_FORMAT           format,
-            DXGI_VK_FORMAT_MODE   mode) const;
+    DXGI_VK_FORMAT_INFO LookupFormat(
+            DXGI_FORMAT           Format,
+            DXGI_VK_FORMAT_MODE   Mode) const;
     
-    bool TestOption(D3D11Option Option) const {
-      return m_d3d11Options.test(Option);
+    DXGI_VK_FORMAT_FAMILY LookupFamily(
+            DXGI_FORMAT           Format,
+            DXGI_VK_FORMAT_MODE   Mode) const;
+    
+    DxvkBufferSlice AllocCounterSlice() {
+      return m_uavCounters->AllocSlice();
+    }
+    
+    void FreeCounterSlice(const DxvkBufferSlice& Slice) {
+      m_uavCounters->FreeSlice(Slice);
+    }
+    
+    DxvkCsChunkRef AllocCsChunk() {
+      DxvkCsChunk* chunk = m_csChunkPool.allocChunk();
+      return DxvkCsChunkRef(chunk, &m_csChunkPool);
+    }
+    
+    const D3D11Options* GetOptions() const {
+      return &m_d3d11Options;
+    }
+
+    D3D10Device* GetD3D10Interface() const {
+      return m_d3d10Device;
     }
     
     static bool CheckFeatureLevelSupport(
       const Rc<DxvkAdapter>&  adapter,
             D3D_FEATURE_LEVEL featureLevel);
     
-    static VkPhysicalDeviceFeatures GetDeviceFeatures(
+    static DxvkDeviceFeatures GetDeviceFeatures(
       const Rc<DxvkAdapter>&  adapter,
             D3D_FEATURE_LEVEL featureLevel);
     
@@ -342,25 +366,23 @@ namespace dxvk {
     
     IDXGIObject*                    m_container;
     Com<IDXGIVkAdapter>             m_dxgiAdapter;
-    
+
     const D3D_FEATURE_LEVEL         m_featureLevel;
     const UINT                      m_featureFlags;
     
     const Rc<DxvkDevice>            m_dxvkDevice;
     const Rc<DxvkAdapter>           m_dxvkAdapter;
     
-    const D3D11OptionSet            m_d3d11Options;
+    const D3D11Options              m_d3d11Options;
     const DxbcOptions               m_dxbcOptions;
     
-    D3D11ImmediateContext*          m_context = nullptr;
+    DxvkCsChunkPool                 m_csChunkPool;
     
-    std::mutex                      m_counterMutex;
-    std::vector<uint32_t>           m_counterSlices;
-    Rc<DxvkBuffer>                  m_counterBuffer;
-    
-    std::mutex                      m_resourceInitMutex;
-    Rc<DxvkContext>                 m_resourceInitContext;
-    uint64_t                        m_resourceInitCommands = 0;
+    D3D11Initializer*               m_initializer = nullptr;
+    D3D11ImmediateContext*          m_context     = nullptr;
+    D3D10Device*                    m_d3d10Device = nullptr;
+
+    Rc<D3D11CounterBuffer>          m_uavCounters;
     
     D3D11StateObjectSet<D3D11BlendState>        m_bsStateObjects;
     D3D11StateObjectSet<D3D11DepthStencilState> m_dsStateObjects;
@@ -368,20 +390,15 @@ namespace dxvk {
     D3D11StateObjectSet<D3D11SamplerState>      m_samplerObjects;
     D3D11ShaderModuleSet                        m_shaderModules;
     
+    Rc<D3D11CounterBuffer> CreateUAVCounterBuffer();
+
     HRESULT CreateShaderModule(
-            D3D11ShaderModule*      pShaderModule,
+            D3D11CommonShader*      pShaderModule,
       const void*                   pShaderBytecode,
             size_t                  BytecodeLength,
             ID3D11ClassLinkage*     pClassLinkage,
+      const DxbcModuleInfo*         pModuleInfo,
             DxbcProgramType         ProgramType);
-    
-    void InitBuffer(
-            D3D11Buffer*                pBuffer,
-      const D3D11_SUBRESOURCE_DATA*     pInitialData);
-    
-    void InitTexture(
-      const Rc<DxvkImage>&              image,
-      const D3D11_SUBRESOURCE_DATA*     pInitialData);
     
     HRESULT GetFormatSupportFlags(
             DXGI_FORMAT Format,
@@ -392,13 +409,8 @@ namespace dxvk {
             VkFormat    Format,
             VkImageType Type) const;
     
-    void CreateCounterBuffer();
-    
-    void LockResourceInitContext();
-    void UnlockResourceInitContext(uint64_t CommandCount);
-    void SubmitResourceInitCommands();
-    
-    static D3D_FEATURE_LEVEL GetMaxFeatureLevel();
+    static D3D_FEATURE_LEVEL GetMaxFeatureLevel(
+      const Rc<DxvkAdapter>&        Adapter);
     
   };
   

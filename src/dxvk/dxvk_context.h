@@ -7,10 +7,12 @@
 #include "dxvk_data.h"
 #include "dxvk_event.h"
 #include "dxvk_meta_clear.h"
+#include "dxvk_meta_mipgen.h"
 #include "dxvk_meta_resolve.h"
 #include "dxvk_pipecache.h"
 #include "dxvk_pipemanager.h"
 #include "dxvk_query.h"
+#include "dxvk_query_manager.h"
 #include "dxvk_query_pool.h"
 #include "dxvk_util.h"
 
@@ -28,10 +30,11 @@ namespace dxvk {
   public:
     
     DxvkContext(
-      const Rc<DxvkDevice>&           device,
-      const Rc<DxvkPipelineCache>&    pipelineCache,
-      const Rc<DxvkPipelineManager>&  pipelineManager,
-      const Rc<DxvkMetaClearObjects>& metaClearObjects);
+      const Rc<DxvkDevice>&             device,
+      const Rc<DxvkPipelineManager>&    pipelineManager,
+      const Rc<DxvkMetaClearObjects>&   metaClearObjects,
+      const Rc<DxvkMetaMipGenObjects>&  metaMipGenObjects,
+      const Rc<DxvkMetaResolveObjects>& metaResolveObjects);
     ~DxvkContext();
     
     /**
@@ -76,12 +79,15 @@ namespace dxvk {
      * \brief Sets render targets
      * 
      * Creates a framebuffer on the fly if necessary
-     * and binds it using \c bindFramebuffer. Prefer
-     * this method over doing the same thing manually.
+     * and binds it using \c bindFramebuffer. Set the
+     * \c spill flag in order to make shader writes
+     * from previous rendering operations visible.
      * \param [in] targets Render targets to bind
+     * \param [in] spill Spill render pass if true
      */
     void bindRenderTargets(
-      const DxvkRenderTargets&    targets);
+      const DxvkRenderTargets&    targets,
+            bool                  spill);
     
     /**
      * \brief Binds index buffer
@@ -216,13 +222,11 @@ namespace dxvk {
      * \brief Clears an active render target
      * 
      * \param [in] imageView Render target view to clear
-     * \param [in] clearArea Image area to clear
      * \param [in] clearAspects Image aspects to clear
      * \param [in] clearValue The clear value
      */
     void clearRenderTarget(
       const Rc<DxvkImageView>&    imageView,
-      const VkClearRect&          clearRect,
             VkImageAspectFlags    clearAspects,
       const VkClearValue&         clearValue);
     
@@ -241,7 +245,7 @@ namespace dxvk {
       const Rc<DxvkImageView>&    imageView,
             VkOffset3D            offset,
             VkExtent3D            extent,
-            VkClearColorValue     value);
+            VkClearValue          value);
     
     /**
      * \brief Copies data from one buffer to another
@@ -318,6 +322,18 @@ namespace dxvk {
             VkImageSubresourceLayers srcSubresource,
             VkOffset3D            srcOffset,
             VkExtent3D            srcExtent);
+    
+    /**
+     * \brief Discards a buffer
+     * 
+     * Renames the buffer in case it is currently
+     * used by the GPU in order to avoid having to
+     * insert barriers before future commands using
+     * the buffer.
+     * \param [in] buffer The buffer to discard
+     */
+    void discardBuffer(
+      const Rc<DxvkBuffer>&       buffer);
     
     /**
      * \brief Starts compute jobs
@@ -404,12 +420,10 @@ namespace dxvk {
      * 
      * Uses blitting to generate lower mip levels from
      * the top-most mip level passed to this method.
-     * \param [in] image The image to generate mips for
-     * \param [in] subresource The subresource range
+     * \param [in] imageView The image to generate mips for
      */
     void generateMipmaps(
-      const Rc<DxvkImage>&            image,
-      const VkImageSubresourceRange&  subresources);
+      const Rc<DxvkImageView>&        imageView);
     
     /**
      * \brief Initializes or invalidates an image
@@ -619,26 +633,42 @@ namespace dxvk {
     
   private:
     
-    const Rc<DxvkDevice>            m_device;
-    const Rc<DxvkPipelineCache>     m_pipeCache;
-    const Rc<DxvkPipelineManager>   m_pipeMgr;
-    const Rc<DxvkMetaClearObjects>  m_metaClear;
+    const Rc<DxvkDevice>              m_device;
+    const Rc<DxvkPipelineManager>     m_pipeMgr;
+    const Rc<DxvkMetaClearObjects>    m_metaClear;
+    const Rc<DxvkMetaMipGenObjects>   m_metaMipGen;
+    const Rc<DxvkMetaResolveObjects>  m_metaResolve;
     
     Rc<DxvkCommandList> m_cmd;
     DxvkContextFlags    m_flags;
     DxvkContextState    m_state;
+
     DxvkBarrierSet      m_barriers;
+    DxvkBarrierSet      m_transitions;
     
-    // TODO implement this properly...
-    Rc<DxvkQueryPool>   m_queryPools[3] = { nullptr, nullptr, nullptr };
+    DxvkQueryManager    m_queries;
     
     VkPipeline m_gpActivePipeline = VK_NULL_HANDLE;
     VkPipeline m_cpActivePipeline = VK_NULL_HANDLE;
-    
-    std::vector<DxvkQueryRevision> m_activeQueries;
+
+    VkDescriptorSet m_gpSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_cpSet = VK_NULL_HANDLE;
     
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkDescriptorInfo,     MaxNumActiveBindings> m_descInfos;
+    std::array<uint32_t,               MaxNumActiveBindings> m_descOffsets;
+    
+    void clearImageViewFb(
+      const Rc<DxvkImageView>&    imageView,
+            VkOffset3D            offset,
+            VkExtent3D            extent,
+            VkClearValue          value);
+    
+    void clearImageViewCs(
+      const Rc<DxvkImageView>&    imageView,
+            VkOffset3D            offset,
+            VkExtent3D            extent,
+            VkClearValue          value);
     
     void startRenderPass();
     void spillRenderPass();
@@ -656,10 +686,10 @@ namespace dxvk {
             DxvkRenderPassOps&    renderPassOps);
     
     void unbindComputePipeline();
-    
     void updateComputePipeline();
     void updateComputePipelineState();
     
+    void unbindGraphicsPipeline();
     void updateGraphicsPipeline();
     void updateGraphicsPipelineState();
     
@@ -671,17 +701,24 @@ namespace dxvk {
     
     void updateShaderResources(
             VkPipelineBindPoint     bindPoint,
-      const Rc<DxvkPipelineLayout>& layout);
+      const DxvkPipelineLayout*     layout);
     
-    void updateShaderDescriptors(
+    VkDescriptorSet updateShaderDescriptors(
             VkPipelineBindPoint     bindPoint,
       const DxvkBindingState&       bindingState,
-      const Rc<DxvkPipelineLayout>& layout);
+      const DxvkPipelineLayout*     layout);
     
-    void updateFramebuffer();
+    void updateShaderDescriptorSetBinding(
+            VkPipelineBindPoint     bindPoint,
+            VkDescriptorSet         set,
+      const DxvkPipelineLayout*     layout);
+
+    void updateFramebuffer(bool isDraw);
     
     void updateIndexBufferBinding();
     void updateVertexBufferBindings();
+
+    void updateDynamicState();
     
     bool validateComputeState();
     bool validateGraphicsState();
@@ -689,26 +726,10 @@ namespace dxvk {
     void commitComputeState();
     void commitGraphicsState();
     
-    void commitComputeBarriers();
-    
-    DxvkQueryHandle allocQuery(
-      const DxvkQueryRevision& query);
-    
-    void resetQueryPool(
-      const Rc<DxvkQueryPool>& pool);
-    
-    void trackQueryPool(
-      const Rc<DxvkQueryPool>& pool);
-    
-    void beginActiveQueries();
-    
-    void endActiveQueries();
-    
-    void insertActiveQuery(
-      const DxvkQueryRevision& query);
-    
-    void eraseActiveQuery(
-      const DxvkQueryRevision& query);
+    void commitComputeInitBarriers();
+    void commitComputePostBarriers();
+
+    bool checkAsyncCompilationCompat();
     
     Rc<DxvkBuffer> getTransferBuffer(VkDeviceSize size);
     

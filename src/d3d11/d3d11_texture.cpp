@@ -8,27 +8,67 @@ namespace dxvk {
     const D3D11_COMMON_TEXTURE_DESC*  pDesc,
           D3D11_RESOURCE_DIMENSION    Dimension)
   : m_device(pDevice), m_desc(*pDesc) {
-    DXGI_VK_FORMAT_INFO formatInfo = m_device->LookupFormat(m_desc.Format, GetFormatMode());
-    
+    DXGI_VK_FORMAT_MODE   formatMode   = GetFormatMode();
+    DXGI_VK_FORMAT_INFO   formatInfo   = m_device->LookupFormat(m_desc.Format, formatMode);
+    DXGI_VK_FORMAT_FAMILY formatFamily = m_device->LookupFamily(m_desc.Format, formatMode);
+
     DxvkImageCreateInfo imageInfo;
-    imageInfo.type           = GetImageTypeFromResourceDim(Dimension);
-    imageInfo.format         = formatInfo.Format;
-    imageInfo.flags          = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-    imageInfo.sampleCount    = VK_SAMPLE_COUNT_1_BIT;
-    imageInfo.extent.width   = m_desc.Width;
-    imageInfo.extent.height  = m_desc.Height;
-    imageInfo.extent.depth   = m_desc.Depth;
-    imageInfo.numLayers      = m_desc.ArraySize;
-    imageInfo.mipLevels      = m_desc.MipLevels;
-    imageInfo.usage          = VK_IMAGE_USAGE_TRANSFER_SRC_BIT
-                             | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    imageInfo.stages         = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    imageInfo.access         = VK_ACCESS_TRANSFER_READ_BIT
-                             | VK_ACCESS_TRANSFER_WRITE_BIT;
-    imageInfo.tiling         = VK_IMAGE_TILING_OPTIMAL;
-    imageInfo.layout         = VK_IMAGE_LAYOUT_GENERAL;
-    
+    imageInfo.type            = GetImageTypeFromResourceDim(Dimension);
+    imageInfo.format          = formatInfo.Format;
+    imageInfo.flags           = 0;
+    imageInfo.sampleCount     = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.extent.width    = m_desc.Width;
+    imageInfo.extent.height   = m_desc.Height;
+    imageInfo.extent.depth    = m_desc.Depth;
+    imageInfo.numLayers       = m_desc.ArraySize;
+    imageInfo.mipLevels       = m_desc.MipLevels;
+    imageInfo.usage           = VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+                              | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageInfo.stages          = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    imageInfo.access          = VK_ACCESS_TRANSFER_READ_BIT
+                              | VK_ACCESS_TRANSFER_WRITE_BIT;
+    imageInfo.tiling          = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.layout          = VK_IMAGE_LAYOUT_GENERAL;
+
     DecodeSampleCount(m_desc.SampleDesc.Count, &imageInfo.sampleCount);
+
+    // Integer clear operations on UAVs are implemented using
+    // a view with a bit-compatible integer format, so we'll
+    // have to include that format in the format family
+    if (m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
+      DXGI_VK_FORMAT_INFO formatBase = m_device->LookupFormat(
+        m_desc.Format, DXGI_VK_FORMAT_MODE_RAW);
+
+      if (formatBase.Format != formatInfo.Format
+       && formatBase.Format != VK_FORMAT_UNDEFINED) {
+        formatFamily.Add(formatBase.Format);
+        formatFamily.Add(formatInfo.Format);
+      }
+    }
+
+    // The image must be marked as mutable if it can be reinterpreted
+    // by a view with a different format. Depth-stencil formats cannot
+    // be reinterpreted in Vulkan, so we'll ignore those.
+    auto formatProperties = imageFormatInfo(formatInfo.Format);
+    
+    bool isTypeless = formatInfo.Aspect == 0;
+    bool isMutable = formatFamily.FormatCount > 1;
+
+    if (isMutable && (formatProperties->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)) {
+      imageInfo.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+
+      // Typeless UAV images have relaxed reinterpretation rules
+      if (!isTypeless || !(m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)) {
+        imageInfo.viewFormatCount = formatFamily.FormatCount;
+        imageInfo.viewFormats     = formatFamily.Formats;
+      }
+    }
+
+    // Some games will try to create an SRGB image with the UAV
+    // bind flag set. This works on Windows, but no UAVs can be
+    // created for the image in practice.
+    bool noUav = formatProperties->flags.test(DxvkFormatFlag::ColorSpaceSrgb)
+      && !CheckFormatFeatureSupport(formatInfo.Format, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
     
     // Adjust image flags based on the corresponding D3D flags
     if (m_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
@@ -52,11 +92,18 @@ namespace dxvk {
                        |  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     }
     
-    if (m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
+    if (m_desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS && !noUav) {
       imageInfo.usage  |= VK_IMAGE_USAGE_STORAGE_BIT;
       imageInfo.stages |= pDevice->GetEnabledShaderStages();
       imageInfo.access |= VK_ACCESS_SHADER_READ_BIT
                        |  VK_ACCESS_SHADER_WRITE_BIT;
+    }
+    
+    // Access pattern for meta-resolve operations
+    if (imageInfo.sampleCount != VK_SAMPLE_COUNT_1_BIT) {
+      imageInfo.usage  |= VK_IMAGE_USAGE_SAMPLED_BIT;
+      imageInfo.stages |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      imageInfo.access |= VK_ACCESS_SHADER_READ_BIT;
     }
     
     if (m_desc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE)
@@ -157,6 +204,57 @@ namespace dxvk {
   }
   
   
+  bool D3D11CommonTexture::CheckViewCompatibility(UINT BindFlags, DXGI_FORMAT Format) const {
+    const DxvkImageCreateInfo& imageInfo = m_image->info();
+
+    // Check whether the given bind flags are supported
+    VkImageUsageFlags usage = GetImageUsageFlags(BindFlags);
+
+    if ((imageInfo.usage & usage) != usage)
+      return false;
+
+    // Check whether the view format is compatible
+    DXGI_VK_FORMAT_MODE formatMode = GetFormatMode();
+    DXGI_VK_FORMAT_INFO viewFormat = m_device->LookupFormat(Format,        formatMode);
+    DXGI_VK_FORMAT_INFO baseFormat = m_device->LookupFormat(m_desc.Format, formatMode);
+    
+    if (imageInfo.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) {
+      // Check whether the given combination of image
+      // view type and view format is actually supported
+      VkFormatFeatureFlags features = GetImageFormatFeatures(BindFlags);
+      
+      if (!CheckFormatFeatureSupport(viewFormat.Format, features))
+        return false;
+
+      // Using the image format itself is always legal
+      if (viewFormat.Format == baseFormat.Format)
+        return true;
+      
+      // If there is a list of compatible formats, the
+      // view format must be included in that list.
+      for (size_t i = 0; i < imageInfo.viewFormatCount; i++) {
+        if (imageInfo.viewFormats[i] == viewFormat.Format)
+          return true;
+      }
+
+      // Otherwise, all bit-compatible formats can be used.
+      if (imageInfo.viewFormatCount == 0) {
+        auto baseFormatInfo = imageFormatInfo(baseFormat.Format);
+        auto viewFormatInfo = imageFormatInfo(viewFormat.Format);
+        
+        return baseFormatInfo->aspectMask  == viewFormatInfo->aspectMask
+            && baseFormatInfo->elementSize == viewFormatInfo->elementSize;
+      }
+
+      return false;
+    } else {
+      // For non-mutable images, the view format
+      // must be identical to the image format.
+      return viewFormat.Format == baseFormat.Format;
+    }
+  }
+  
+  
   HRESULT D3D11CommonTexture::NormalizeTextureProperties(D3D11_COMMON_TEXTURE_DESC* pDesc) {
     if (FAILED(DecodeSampleCount(pDesc->SampleDesc.Count, nullptr)))
       return E_INVALIDARG;
@@ -194,6 +292,16 @@ namespace dxvk {
         && (pImageInfo->numLayers     <= formatProps.maxArrayLayers)
         && (pImageInfo->mipLevels     <= formatProps.maxMipLevels)
         && (pImageInfo->sampleCount    & formatProps.sampleCounts);
+  }
+
+
+  BOOL D3D11CommonTexture::CheckFormatFeatureSupport(
+          VkFormat              Format,
+          VkFormatFeatureFlags  Features) const {
+    VkFormatProperties properties = m_device->GetDXVKDevice()->adapter()->formatProperties(Format);
+
+    return (properties.linearTilingFeatures  & Features) == Features
+        || (properties.optimalTilingFeatures & Features) == Features;
   }
   
   
@@ -373,8 +481,9 @@ namespace dxvk {
   D3D11Texture1D::D3D11Texture1D(
           D3D11Device*                pDevice,
     const D3D11_COMMON_TEXTURE_DESC*  pDesc)
-  : m_texture(pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE1D),
-    m_interop(this, &m_texture) {
+  : m_texture (pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE1D),
+    m_interop (this, &m_texture),
+    m_d3d10   (this) {
     
   }
   
@@ -392,6 +501,13 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Texture1D)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+    
+    if (riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10Resource)
+     || riid == __uuidof(ID3D10Texture1D)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     
@@ -444,8 +560,9 @@ namespace dxvk {
   D3D11Texture2D::D3D11Texture2D(
           D3D11Device*                pDevice,
     const D3D11_COMMON_TEXTURE_DESC*  pDesc)
-  : m_texture(pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE2D),
-    m_interop(this, &m_texture) {
+  : m_texture (pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE2D),
+    m_interop (this, &m_texture),
+    m_d3d10   (this) {
     
   }
   
@@ -463,6 +580,13 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Texture2D)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10Resource)
+     || riid == __uuidof(ID3D10Texture2D)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     
@@ -517,8 +641,9 @@ namespace dxvk {
   D3D11Texture3D::D3D11Texture3D(
           D3D11Device*                pDevice,
     const D3D11_COMMON_TEXTURE_DESC*  pDesc)
-  : m_texture(pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE3D),
-    m_interop(this, &m_texture) {
+  : m_texture (pDevice, pDesc, D3D11_RESOURCE_DIMENSION_TEXTURE3D),
+    m_interop (this, &m_texture),
+    m_d3d10   (this) {
     
   }
   
@@ -536,6 +661,13 @@ namespace dxvk {
      || riid == __uuidof(ID3D11Resource)
      || riid == __uuidof(ID3D11Texture3D)) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+    
+    if (riid == __uuidof(ID3D10DeviceChild)
+     || riid == __uuidof(ID3D10Resource)
+     || riid == __uuidof(ID3D10Texture3D)) {
+      *ppvObject = ref(&m_d3d10);
       return S_OK;
     }
     

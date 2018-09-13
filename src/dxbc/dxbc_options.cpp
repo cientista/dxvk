@@ -5,8 +5,7 @@
 namespace dxvk {
   
   const static std::unordered_map<std::string, DxbcOptions> g_dxbcAppOptions = {{
-    { "Dishonored2.exe", DxbcOptions(DxbcOption::ForceTex2DArray) },
-    { "ManiaPlanet.exe", DxbcOptions(DxbcOption::ForceTex2DArray) },
+    
   }};
   
   
@@ -22,20 +21,12 @@ namespace dxvk {
   DxbcOptions getDxbcDeviceOptions(const Rc<DxvkDevice>& device) {
     DxbcOptions flags;
     
-    const VkPhysicalDeviceProperties devProps    = device->adapter()->deviceProperties();
-    const VkPhysicalDeviceFeatures   devFeatures = device->features();
+    const DxvkDeviceFeatures& devFeatures = device->features();
     
-    const DxvkGpuVendor vendor = static_cast<DxvkGpuVendor>(devProps.vendorID);
-    
-    if (vendor == DxvkGpuVendor::Nvidia) {
-      flags.set(
-        DxbcOption::AddExtraDrefCoordComponent,
-        DxbcOption::UseSimpleMinMaxClamp);
-    }
-    
-    if (devFeatures.shaderStorageImageReadWithoutFormat)
+    if (devFeatures.core.features.shaderStorageImageReadWithoutFormat)
       flags.set(DxbcOption::UseStorageImageReadWithoutFormat);
     
+    flags.set(DxbcOption::DeferKill);
     return flags;
   }
   

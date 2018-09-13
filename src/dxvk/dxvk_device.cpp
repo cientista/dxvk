@@ -6,20 +6,22 @@ namespace dxvk {
   DxvkDevice::DxvkDevice(
     const Rc<DxvkAdapter>&          adapter,
     const Rc<vk::DeviceFn>&         vkd,
-    const Rc<DxvkDeviceExtensions>& extensions,
-    const VkPhysicalDeviceFeatures& features)
-  : m_adapter         (adapter),
-    m_vkd             (vkd),
-    m_extensions      (extensions),
-    m_features        (features),
-    m_properties      (adapter->deviceProperties()),
-    m_memory          (new DxvkMemoryAllocator  (adapter, vkd)),
-    m_renderPassPool  (new DxvkRenderPassPool   (vkd)),
-    m_pipelineCache   (new DxvkPipelineCache    (vkd)),
-    m_pipelineManager (new DxvkPipelineManager  (this)),
-    m_metaClearObjects(new DxvkMetaClearObjects (vkd)),
-    m_unboundResources(this),
-    m_submissionQueue (this) {
+    const DxvkDeviceExtensions&     extensions,
+    const DxvkDeviceFeatures&       features)
+  : m_options           (adapter->instance()->config()),
+    m_adapter           (adapter),
+    m_vkd               (vkd),
+    m_extensions        (extensions),
+    m_features          (features),
+    m_properties        (adapter->deviceProperties()),
+    m_memory            (new DxvkMemoryAllocator    (this)),
+    m_renderPassPool    (new DxvkRenderPassPool     (vkd)),
+    m_pipelineManager   (new DxvkPipelineManager    (this)),
+    m_metaClearObjects  (new DxvkMetaClearObjects   (vkd)),
+    m_metaMipGenObjects (new DxvkMetaMipGenObjects  (vkd)),
+    m_metaResolveObjects(new DxvkMetaResolveObjects (vkd)),
+    m_unboundResources  (this),
+    m_submissionQueue   (this) {
     m_graphicsQueue.queueFamily = m_adapter->graphicsQueueFamily();
     m_presentQueue.queueFamily  = m_adapter->presentQueueFamily();
     
@@ -37,6 +39,14 @@ namespace dxvk {
     // Wait for all pending Vulkan commands to be
     // executed before we destroy any resources.
     m_vkd->vkDeviceWaitIdle(m_vkd->device());
+  }
+
+
+  DxvkDeviceOptions DxvkDevice::options() const {
+    DxvkDeviceOptions options;
+    options.maxNumDynamicUniformBuffers = m_properties.limits.maxDescriptorSetUniformBuffersDynamic;
+    options.maxNumDynamicStorageBuffers = m_properties.limits.maxDescriptorSetStorageBuffersDynamic;
+    return options;
   }
   
   
@@ -96,8 +106,8 @@ namespace dxvk {
     Rc<DxvkCommandList> cmdList = m_recycledCommandLists.retrieveObject();
     
     if (cmdList == nullptr) {
-      cmdList = new DxvkCommandList(m_vkd,
-        this, m_adapter->graphicsQueueFamily());
+      cmdList = new DxvkCommandList(this,
+        m_adapter->graphicsQueueFamily());
     }
     
     return cmdList;
@@ -106,9 +116,10 @@ namespace dxvk {
   
   Rc<DxvkContext> DxvkDevice::createContext() {
     return new DxvkContext(this,
-      m_pipelineCache,
       m_pipelineManager,
-      m_metaClearObjects);
+      m_metaClearObjects,
+      m_metaMipGenObjects,
+      m_metaResolveObjects);
   }
   
   
@@ -155,13 +166,6 @@ namespace dxvk {
   }
   
   
-  Rc<DxvkQueryPool> DxvkDevice::createQueryPool(
-          VkQueryType               queryType,
-          uint32_t                  queryCount) {
-    return new DxvkQueryPool(m_vkd, queryType, queryCount);
-  }
-  
-  
   Rc<DxvkSampler> DxvkDevice::createSampler(
     const DxvkSamplerCreateInfo&  createInfo) {
     return new DxvkSampler(m_vkd, createInfo);
@@ -180,7 +184,8 @@ namespace dxvk {
     const DxvkInterfaceSlots&       iface,
     const SpirvCodeBuffer&          code) {
     return new DxvkShader(stage,
-      slotCount, slotInfos, iface, code);
+      slotCount, slotInfos, iface,
+      code, DxvkShaderConstData());
   }
   
   
@@ -201,6 +206,11 @@ namespace dxvk {
     std::lock_guard<sync::Spinlock> lock(m_statLock);
     result.merge(m_statCounters);
     return result;
+  }
+
+
+  uint32_t DxvkDevice::getCurrentFrameId() const {
+    return m_statCounters.getCtr(DxvkStatCounter::QueuePresentCount);
   }
   
   
